@@ -1,0 +1,15 @@
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
+*.spec.bak
+app/logs/*.log
+app/settings/*.json
+app/backups/*.bak
+!app/logs/.keep
+!app/settings/.keep
+!app/backups/.keep
+
+app/resources/*.png
+!app/resources/.keep
