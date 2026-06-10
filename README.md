@@ -4,68 +4,12 @@ A standalone desktop editor for EverQuest map `.txt` files.
 
 EQ Map Editor can load, inspect, edit, recolour, search, and safely save EverQuest map line/point records.
 
-![Main editor window](docs/screenshots/main_window_overview.png)
+<img width="1644" height="1062" alt="image" src="https://github.com/user-attachments/assets/f7b9fae5-3161-450e-b71a-8b6966e89137" />
 
 ## Current version
 
 ```text
-v1.0.0-beta12
-```
-
-## Beta 12 fix
-
-This build applies the same explicit inverted arrow images to the main editor spin boxes, not just the colour picker dialog.
-
-Changes:
-
-```text
-Main Selected Item RGB/coordinate/size spin boxes now use explicit light arrow PNGs in dark mode
-Colour picker dialog keeps the Beta 11 explicit arrow image fix
-Dark spin-box buttons retain the larger clickable area
-```
-
-## Beta 11 fix
-
-This build keeps the colour picker dialog in dark mode while restoring visible up/down arrows.
-
-Changes:
-
-```text
-QColorDialog now uses explicit light arrow PNGs on dark spin-box buttons
-The arrows visually match the light-mode arrow shape, but inverted for dark mode
-Runtime resources are created in the local resources/ folder
-APP_ROOT now points beside the EXE in PyInstaller builds
-```
-
-## Beta 10 fix
-
-This build fixes the QColorDialog RGB/Hue/Sat/Val spin-box arrows in dark mode.
-
-Changes:
-
-```text
-Removed all QSpinBox/QDoubleSpinBox subcontrol styling from the dark app stylesheet
-Added a local light/native stylesheet for QColorDialog
-Replaced static QColorDialog.getColor calls with a helper dialog that keeps spin-box arrows visible
-```
-
-## Beta 9 fix
-
-This build fixes the spin-box arrow rendering issue where the RGB selector arrows could appear as white boxes in dark mode.
-
-The custom CSS triangle arrows were removed; Qt now draws the native/Fusion arrows while the clickable button area remains styled for dark mode.
-
-## Beta 8 fix
-
-This build fixes an issue in the standalone EXE package where the up/down arrows on RGB spin boxes could be unreliable or invisible on some Windows/PyInstaller builds.
-
-Changes:
-
-```text
-Use Fusion style for consistent Windows widget rendering
-Force RGB spin boxes to use explicit Up/Down arrows
-Give RGB spin boxes a larger clickable arrow area
-Add dark-mode styling for spin box arrow buttons
+v1.0.0 beta12
 ```
 
 ## Important beta safety warning
@@ -189,7 +133,7 @@ python app/eq_map_editor.py
 
 ## Main window overview
 
-![Main editor window](docs/screenshots/main_window_overview.png)
+<img width="1645" height="1028" alt="image" src="https://github.com/user-attachments/assets/7b0b8b37-c004-4d0b-b37b-2a3961f9267d" />
 
 The top row contains the inline **File** menu, view controls, label/point toggles, background toggles, search, and sidebar toggle.
 
@@ -313,7 +257,7 @@ settings/eq_map_editor_settings.json
 
 ## Zones tab
 
-![Zones tab](docs/screenshots/zones_tab.png)
+<img width="530" height="776" alt="image" src="https://github.com/user-attachments/assets/ec0de276-461c-4f78-8613-dc0613592d07" />
 
 The **Zones** tab lets you choose your EQ map folder and open zones by name.
 
@@ -423,6 +367,3 @@ requirements.txt
 README.md
 ```
 
-## License
-
-Add your preferred license before publishing publicly.
