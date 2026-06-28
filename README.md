@@ -2,7 +2,7 @@
 
 EQ Map Editor is a desktop editor for EverQuest map `.txt` files. It can load one or more map files for a zone, render the lines and points, edit labels and colours, move points and line segments, bulk-edit map colours, and save the changes back to the original map text files with backups.
 
-This README is written for **v1.1.18-toolbar-icon-style-refresh**.
+This README is written for **v1.1.19 Beta**.
 
 ![Main interface](docs/screenshots/01-main-interface.png)
 
@@ -36,13 +36,13 @@ The app creates backups in the local `app/backups/` folder before overwriting so
 Extract the package to a folder, for example:
 
 ```powershell
-C:\git-anotheregostar\eqmapeditor\eq_map_editor_v1_1_18
+C:\git-anotheregostar\eqmapeditor\eq_map_editor_v1_1_19
 ```
 
 From PowerShell:
 
 ```powershell
-cd "C:\git-anotheregostar\eqmapeditor\eq_map_editor_v1_1_18"
+cd "C:\git-anotheregostar\eqmapeditor\eq_map_editor_v1_1_19"
 python -m pip install -r requirements.txt
 python .\app\eq_map_editor.py
 ```
@@ -137,7 +137,7 @@ The File menu contains longer-running or less frequently used actions.
 
 ## Bottom canvas toolbar
 
-![Bottom canvas toolbar](docs/screenshots/03-bottom-canvas-toolbar.png)
+<img width="1135" height="87" alt="image" src="https://github.com/user-attachments/assets/8e21b1b8-7c0a-4d35-b48b-ad1ecd6df95b" />
 
 The bottom overlay is the fastest way to change edit mode and perform common edit actions while staying focused on the map.
 
@@ -461,35 +461,7 @@ The map can be viewed against a light or dark background. This only affects disp
 
 Use palette conversion when you want to create light-mode-friendly and dark-mode-friendly versions of a map pack.
 
-## App icon
-
-The current app icon uses a golden windrose over a parchment map.
-
-![Icon size preview](docs/screenshots/08-icon-size-preview.png)
-
-The package includes:
-
-```text
-app/resources/eq_maps_icon.png
-app/resources/eq_maps_icon.ico
-```
-
-The `.ico` is used by the Windows EXE build.
-
 ## Troubleshooting
-
-### The EXE still shows a generic icon
-
-Rebuild using `build_windows.bat`. If Windows still shows an old icon, Windows may be caching it.
-
-Try:
-
-```text
-Create a new shortcut to the rebuilt EXE.
-Rename the EXE or output folder.
-Restart Windows Explorer from Task Manager.
-Restart Windows.
-```
 
 ### The app opens but a map looks inverted
 
