@@ -483,20 +483,6 @@ Use Undo immediately if you have not saved. For safer conversions, use **Palette
 
 Use the colour lists, point search, or label search to select groups indirectly. You can also temporarily hide layers to reduce clutter.
 
-## Release checklist before sharing
-
-Before giving the program to testers:
-
-```text
-1. Build a clean EXE with build_windows.bat.
-2. Launch the EXE, not the Python source.
-3. Confirm the app icon appears in the title bar and taskbar.
-4. Open a copied map folder.
-5. Test Save As... before Save Edits.
-6. Confirm backups are created under app/backups/.
-7. Include this README with the package.
-```
-
 ## Current status
 
-This version is a strong private beta candidate. It supports loading, rendering, searching, selecting, editing, moving, adding, deleting, bulk editing, palette conversion, mapping preview, backups, settings, zones, mini-map navigation, pan-beyond-edges, and packaged Windows builds.
+This version supports loading, rendering, searching, selecting, editing, moving, adding, deleting, bulk editing, palette conversion, mapping preview, backups, settings, zones, mini-map navigation, pan-beyond-edges, and packaged Windows builds.
