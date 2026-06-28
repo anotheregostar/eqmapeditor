@@ -1,15 +1,526 @@
+## v1.1.19 SVG toolbar icons
+
+This build replaces the problematic hand-drawn bottom toolbar action icons with real SVG resources.
+
+### Changed
+
+```text
+Undo:
+- now loaded from app/resources/icons/undo.svg
+
+Redo:
+- now loaded from app/resources/icons/redo.svg
+
+Save:
+- now loaded from app/resources/icons/save.svg
+
+Revert:
+- now loaded from app/resources/icons/revert.svg
+
+Why:
+- The previous undo/redo icons were drawn with tiny QPainter arcs/paths and separate arrowheads.
+- At toolbar size, those pieces scaled poorly and looked broken.
+- SVG icons scale more cleanly and consistently.
+```
+
+## v1.1.18 toolbar icon style refresh
+
+This build refreshes the bottom toolbar icons to use clearer, heavier symbols inspired by the provided references.
+
+### Changed
+
+```text
+Undo:
+- replaced with a bold standard undo arrow
+
+Redo:
+- replaced with a bold standard redo arrow
+
+Save:
+- simplified into a chunkier floppy-disk icon
+
+Revert:
+- redrawn as a document/page with a heavy return arrow
+```
+
+## v1.1.17 new undo redo icons
+
+This build replaces the previous undo/redo symbols with clearer bent-arrow icons.
+
+### Changed
+
+```text
+Undo:
+- replaced with a bent left-pointing arrow icon
+
+Redo:
+- replaced with a bent right-pointing arrow icon
+
+Both icons now use simpler shapes intended to read better at small sizes.
+```
+
+## v1.1.16 arrow tip fix
+
+This build refines the Undo and Redo toolbar icons.
+
+### Changed
+
+```text
+Undo:
+- moved the arrow head to the true end of the curved line
+
+Redo:
+- moved the arrow head to the true end of the curved line
+
+This makes both icons read more clearly at small sizes.
+```
+
+## v1.1.15 clear bottom toolbar icons
+
+This build improves the readability of the bottom toolbar action icons.
+
+### Changed
+
+```text
+Undo:
+- Replaced with a bolder, more standard curved left arrow
+
+Redo:
+- Replaced with a bolder, more standard curved right arrow
+
+Save:
+- Replaced with a clearer floppy-disk save symbol
+
+Revert:
+- Replaced with a document/page plus restore arrow symbol
+
+General:
+- Increased icon drawing clarity
+- Slightly enlarged toolbar icon size for better readability
+```
+
+## v1.1.14 map icon and bottom actions
+
+This build updates the app icon and improves the bottom canvas toolbar.
+
+### Changed
+
+```text
+Icon:
+- Replaced the old small-text EQ Maps icon
+- New icon uses the selected full-space golden windrose over parchment map
+- Rebuilt app/resources/eq_maps_icon.png and app/resources/eq_maps_icon.ico
+
+Startup:
+- Removed the beta safety popup from startup
+- The normal welcome / quick-start dialog remains available
+
+Bottom canvas toolbar:
+- Added Undo
+- Added Redo
+- Added Save Edits
+- Added Revert Unsaved / reload from disk
+```
+
+## v1.1.13 icon resource fix
+
+This build fixes icon lookup for the packaged EXE.
+
+### Changed
+
+```text
+The app now looks for bundled resources in:
+- the EXE folder
+- the PyInstaller _internal folder
+- the PyInstaller _MEIPASS bundle folder
+- the source app folder
+
+The app prefers eq_maps_icon.ico on Windows.
+The build script now deletes old build/dist folders before building.
+The PyInstaller spec uses an absolute path to the .ico file.
+```
+
+### Why this matters
+
+```text
+In PyInstaller one-folder builds, resources are often placed under:
+dist/EQMapEditor/_internal/resources/
+
+Earlier builds looked mainly beside the EXE:
+dist/EQMapEditor/resources/
+
+So the app could miss the icon at runtime, even though the icon file existed in the package.
+```
+
+## v1.1.12 icon and canvas toolbar refinement
+
+This build addresses app icon display and makes the bottom canvas overlay controls functional.
+
+### Changed
+
+```text
+App icon:
+- Uses the .ico file first on Windows
+- Sets a Windows AppUserModelID so the taskbar is more likely to show the EQ Maps icon
+- Sets the same icon on QApplication and the main window
+
+Canvas overlay:
+- Removed the non-functional pan button
+- Replaced single zoom button with Zoom Out and Zoom In buttons
+- Split the selector button into edit-mode buttons:
+  - Select Only
+  - Move Points
+  - Move Lines
+  - Move Line Endpoints
+- Overlay buttons stay in sync with the Inspector Edit Mode dropdown
+```
+
+
+## v1.1.11 beta prep
+
+This build focuses on first-run usability, safer saving, and release polish.
+
+### Added
+
+```text
+Integrated app icon assets:
+- app/resources/eq_maps_icon.png
+- app/resources/eq_maps_icon.ico
+- PyInstaller spec now uses the .ico for the Windows EXE
+
+First-run welcome / quick-start dialog
+File > Quick Start
+File > Keyboard Shortcuts
+File > Open Logs Folder
+File > About
+Real Ctrl+O / Ctrl+S / Ctrl+F / Esc shortcuts for common commands
+```
+
+### Safer saving
+
+```text
+The editor now records file modified-times when map files are loaded.
+Before Save Edits, it checks whether any target file changed externally.
+If a file changed on disk after loading, the editor warns before overwriting.
+```
+
+
+## v1.1.10 pan beyond map edges
+
+This build makes the map canvas easier to navigate near the outer edges.
+
+### Changed
+
+```text
+Expanded the QGraphicsScene pan area beyond the map bounds
+Users can now pan past the edge of the loaded map
+Left/right/top/bottom map edges can be centered in the view
+Fit Map still fits to the actual map content, not the padded pan area
+Mini overview still shows the actual map content and current viewport rectangle
+```
+
+
+## v1.1.9 palette mapping preview
+
+This build replaces blind nearest-colour conversion with a visible mapping preview.
+
+### Added
+
+```text
+Mapping Preview table in Bulk Colours > Palette Conversion
+
+The preview groups visible map colours separately by:
+- Point colours
+- Line colours
+
+Each group shows:
+- RGB swatch
+- RGB value
+- Count
+- Sample point labels, when available
+- A dropdown to choose the palette role
+```
+
+### Why this matters
+
+```text
+The same RGB colour might mean different things in different maps.
+Lines could be water, walls, paths, or zone boundaries.
+Points could be vendors, bankers, portals, monsters, or generic labels.
+```
+
+So v1.1.9 lets the user decide:
+
+```text
+Current map colour → palette role → target light/dark colour
+```
+
+### Buttons
+
+```text
+Build Mapping Preview
+- Rebuilds the detected colour groups
+
+Auto-map
+- Uses label clues for point colours where possible
+- Falls back to nearest RGB match
+
+Apply Mapping
+- Applies only the preview rows that are mapped to a role
+- Skips rows set to Skip
+
+Quick Apply Nearest
+- Keeps the old v1.1.8 behaviour for fast simple conversions
+```
+
+
+## v1.1.8 map colour palettes
+
+This build adds light/dark colour palettes for map files.
+
+### Added
+
+```text
+Palette Conversion section in Bulk Colours
+Built-in palettes:
+- EQ Map Standard
+- High Contrast
+
+User palette support:
+- Custom palettes are saved as JSON files in app/palettes/
+- Use Edit / Save Palette to save your own paired light/dark palette entries
+- Open Palettes Folder opens the palette folder
+
+Palette conversion:
+- Choose a palette
+- Choose target: Dark or Light
+- Click Apply Palette to Visible Records
+- The app maps each current colour to the nearest palette entry
+- It then applies that entry's matching light or dark RGB value
+```
+
+
+## v1.1.7 toolbar and canvas button cleanup
+
+This build fixes clipping/alignment issues in the top toolbar and bottom canvas overlay.
+
+### Changes
+
+```text
+Top toolbar buttons now render as full rectangles again
+Search Labels text and search box are vertically aligned with the toolbar buttons
+Bottom canvas overlay buttons now render as full rectangles and are centered in the overlay bar
+Canvas overlay icons are now drawn icons instead of hard-to-see text/emoji glyphs
+```
+
+
+## v1.1.6 inspector cleanup
+
+This build removes the non-functional thumb tack / pin icon from the Inspector header.
+
+### Changes
+
+```text
+Removed the placeholder Inspector pin button
+Kept the Inspector close / hide button
+No behavior changes to the Inspector itself
+```
+
+
+## v1.1.5 canvas overlay / explorer simplification
+
+This build removes the left Explorer tool panel and moves useful context into the map canvas.
+
+### Changes
+
+```text
+Removed the left Explorer rail/tools from the main layout
+Center map canvas now expands to use the freed space
+Added a bottom-left canvas control/status overlay:
+- Select mode shortcut
+- Pan hint
+- Zoom hint
+- Fit map shortcut
+- Cursor X/Y/Z readout
+- Zoom percentage
+
+Added a bottom-right mini overview map
+- Shows the full loaded map
+- Draws a viewport rectangle showing the current visible area
+
+Aligned the Search Labels text box with the rest of the top toolbar controls
+Zone search now filters while typing instead of requiring Search/Enter
+```
+
+
+## v1.1.4 left explorer refinement
+
+This build updates the left Explorer panel to better match the Option 1 concept.
+
+### Changes
+
+```text
+Added a vertical navigation rail for:
+- Zones
+- Layers
+- Bulk Colours
+- Points
+- Pending Changes
+
+Added stacked Explorer pages instead of a single long stacked column
+Zones page now includes a searchable zone preview list
+Layers page now summarizes loaded files and visibility
+Bulk Colours, Points, and Pending pages each have clearer focused summaries
+Explorer width and styling updated to better match the mockup
+```
+
+
+## v1.1.3 inspector refinement
+
+This build updates the right-side Inspector to better match the Option 1 concept.
+
+### Changes
+
+```text
+Inspector header with utility buttons
+Selection Summary card with Delete Selected action
+Card-style grouped sections for Label, Point Coordinates, Line Endpoints, Color (RGB), and Point Size
+Full-width primary Apply Changes button
+Cleaner helper text and footer summary
+Wider right-side inspector area
+```
+
+
 # EQ Map Editor
 
 A standalone desktop editor for EverQuest map `.txt` files.
 
 EQ Map Editor can load, inspect, edit, recolour, search, and safely save EverQuest map line/point records.
 
-<img width="1644" height="1062" alt="image" src="https://github.com/user-attachments/assets/f7b9fae5-3161-450e-b71a-8b6966e89137" />
+![Main editor window](docs/screenshots/main_window_overview.png)
 
 ## Current version
 
 ```text
-v1.0.0 beta12
+v1.1.19-svg-toolbar-icons
+```
+
+## Beta 12 fix
+
+This build applies the same explicit inverted arrow images to the main editor spin boxes, not just the colour picker dialog.
+
+Changes:
+
+```text
+Main Selected Item RGB/coordinate/size spin boxes now use explicit light arrow PNGs in dark mode
+Colour picker dialog keeps the Beta 11 explicit arrow image fix
+Dark spin-box buttons retain the larger clickable area
+```
+
+## Beta 11 fix
+
+This build keeps the colour picker dialog in dark mode while restoring visible up/down arrows.
+
+Changes:
+
+```text
+QColorDialog now uses explicit light arrow PNGs on dark spin-box buttons
+The arrows visually match the light-mode arrow shape, but inverted for dark mode
+Runtime resources are created in the local resources/ folder
+APP_ROOT now points beside the EXE in PyInstaller builds
+```
+
+## Beta 10 fix
+
+This build fixes the QColorDialog RGB/Hue/Sat/Val spin-box arrows in dark mode.
+
+Changes:
+
+```text
+Removed all QSpinBox/QDoubleSpinBox subcontrol styling from the dark app stylesheet
+Added a local light/native stylesheet for QColorDialog
+Replaced static QColorDialog.getColor calls with a helper dialog that keeps spin-box arrows visible
+```
+
+## Beta 9 fix
+
+This build fixes the spin-box arrow rendering issue where the RGB selector arrows could appear as white boxes in dark mode.
+
+The custom CSS triangle arrows were removed; Qt now draws the native/Fusion arrows while the clickable button area remains styled for dark mode.
+
+## Beta 8 fix
+
+This build fixes an issue in the standalone EXE package where the up/down arrows on RGB spin boxes could be unreliable or invisible on some Windows/PyInstaller builds.
+
+Changes:
+
+```text
+Use Fusion style for consistent Windows widget rendering
+Force RGB spin boxes to use explicit Up/Down arrows
+Give RGB spin boxes a larger clickable arrow area
+Add dark-mode styling for spin box arrow buttons
+```
+
+## v1.1.2 fix
+
+Fixed a missing `QSize` import used by the refined top toolbar.
+
+## v1.1.1 top bar refinement
+
+This build refines the Option 1 top toolbar to better match the mockup.
+
+### Changes
+
+```text
+Toolbar buttons use a more card-like grouped style
+File button is styled inline with the rest of the toolbar
+Search label and search box are visually aligned with the toolbar buttons
+Light and dark themes now use the same toolbar padding, margins, and control sizes
+Theme switching no longer changes the top-bar spacing/layout
+```
+
+## v1.1 Option 1 UI update
+
+This build applies the **Option 1 – Explorer + Canvas + Inspector** layout.
+
+### Layout changes
+
+```text
+Left Explorer panel
+- Zones quick access
+- Layer visibility
+- Bulk colour swatches
+- Points/lines summary
+- Pending changes summary
+
+Center canvas
+- Main map remains the largest area
+- Existing pan/zoom/fit/search tools retained
+
+Right Inspector
+- Selected item editing remains on the right
+- Existing tools are still available through Inspector tabs and left Explorer buttons
+```
+
+### Feature access retained
+
+All current Beta 12 features remain in the build:
+
+```text
+File menu
+Fit Map / Fit Selected / Clear Selection
+Show Labels / Show Points
+Light/Dark background
+Toggle Sidebar
+Global label search
+Zone browser
+Layer visibility
+Bulk colour tools
+Points search/bulk tools
+Pending Changes
+Preferences
+Save Edits / Save As / Revert / Restore Backup
+Keyboard shortcuts
 ```
 
 ## Important beta safety warning
@@ -133,7 +644,7 @@ python app/eq_map_editor.py
 
 ## Main window overview
 
-<img width="1645" height="1028" alt="image" src="https://github.com/user-attachments/assets/7b0b8b37-c004-4d0b-b37b-2a3961f9267d" />
+![Main editor window](docs/screenshots/main_window_overview.png)
 
 The top row contains the inline **File** menu, view controls, label/point toggles, background toggles, search, and sidebar toggle.
 
@@ -257,7 +768,7 @@ settings/eq_map_editor_settings.json
 
 ## Zones tab
 
-<img width="530" height="776" alt="image" src="https://github.com/user-attachments/assets/ec0de276-461c-4f78-8613-dc0613592d07" />
+![Zones tab](docs/screenshots/zones_tab.png)
 
 The **Zones** tab lets you choose your EQ map folder and open zones by name.
 
@@ -367,3 +878,6 @@ requirements.txt
 README.md
 ```
 
+## License
+
+Add your preferred license before publishing publicly.

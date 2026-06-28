@@ -1,0 +1,97 @@
+{
+  "name": "Readable Dark Light Pair",
+  "description": "Example user palette with paired colours for light and dark map backgrounds.",
+  "entries": [
+    {
+      "name": "Walls",
+      "light": [
+        30,
+        30,
+        30
+      ],
+      "dark": [
+        220,
+        220,
+        220
+      ]
+    },
+    {
+      "name": "Labels",
+      "light": [
+        35,
+        35,
+        35
+      ],
+      "dark": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "name": "Quest Yellow",
+      "light": [
+        145,
+        115,
+        0
+      ],
+      "dark": [
+        255,
+        230,
+        0
+      ]
+    },
+    {
+      "name": "Danger Red",
+      "light": [
+        180,
+        0,
+        0
+      ],
+      "dark": [
+        255,
+        50,
+        50
+      ]
+    },
+    {
+      "name": "Safe Green",
+      "light": [
+        0,
+        120,
+        0
+      ],
+      "dark": [
+        90,
+        255,
+        90
+      ]
+    },
+    {
+      "name": "Travel Blue",
+      "light": [
+        0,
+        90,
+        210
+      ],
+      "dark": [
+        90,
+        180,
+        255
+      ]
+    },
+    {
+      "name": "Portal Purple",
+      "light": [
+        110,
+        40,
+        180
+      ],
+      "dark": [
+        205,
+        125,
+        255
+      ]
+    }
+  ]
+}

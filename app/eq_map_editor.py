@@ -41,8 +41,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional, Any
 
-from PySide6.QtCore import Qt, QPointF, QRectF, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen, QBrush, QFont, QPixmap
+from PySide6.QtCore import Qt, QPointF, QRectF, QRect, QTimer, QSize
+from PySide6.QtGui import QAction, QActionGroup, QColor, QPainter, QPainterPath, QPen, QBrush, QFont, QPixmap, QIcon, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -78,21 +78,83 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QTabWidget,
+    QStackedWidget,
     QMenu,
 )
 
 
-VERSION = "v1.0.0-beta12"
+VERSION = "v1.1.19-svg-toolbar-icons"
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", APP_ROOT))
+
+# In PyInstaller one-folder builds, bundled data usually lives in dist/EQMapEditor/_internal/.
+# Keep user-writable folders beside the EXE/source, but look for bundled resources in both places.
+BUNDLED_ROOT_CANDIDATES = [
+    APP_ROOT,
+    APP_ROOT / "_internal",
+    BUNDLE_ROOT,
+    Path(__file__).resolve().parent,
+]
+
 LOGS_DIR = APP_ROOT / "logs"
 SETTINGS_DIR = APP_ROOT / "settings"
 BACKUPS_DIR = APP_ROOT / "backups"
 RESOURCES_DIR = APP_ROOT / "resources"
+BUNDLED_RESOURCES_DIRS = [root / "resources" for root in BUNDLED_ROOT_CANDIDATES]
+PALETTES_DIR = APP_ROOT / "palettes"
+BUNDLED_PALETTES_DIRS = [root / "palettes" for root in BUNDLED_ROOT_CANDIDATES]
+APP_ICON_PATH = RESOURCES_DIR / "eq_maps_icon.png"
+APP_ICON_ICO_PATH = RESOURCES_DIR / "eq_maps_icon.ico"
 SETTINGS_PATH = SETTINGS_DIR / "eq_map_editor_settings.json"
 LOG_PATH = LOGS_DIR / "eq_map_editor.log"
 
-for _folder in (LOGS_DIR, SETTINGS_DIR, BACKUPS_DIR, RESOURCES_DIR):
+for _folder in (LOGS_DIR, SETTINGS_DIR, BACKUPS_DIR, RESOURCES_DIR, PALETTES_DIR):
     _folder.mkdir(parents=True, exist_ok=True)
+
+
+def first_existing_path(relative_path: str, roots: list[Path]) -> Optional[Path]:
+    for root in roots:
+        candidate = root / relative_path
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def set_windows_app_user_model_id() -> None:
+    """Set a stable Windows AppUserModelID so the taskbar uses this app's icon."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EQMaps.Editor")
+    except Exception:
+        pass
+
+
+def app_icon() -> QIcon:
+    icon_roots = BUNDLED_RESOURCES_DIRS + [RESOURCES_DIR]
+    ico_path = first_existing_path("eq_maps_icon.ico", icon_roots)
+    png_path = first_existing_path("eq_maps_icon.png", icon_roots)
+
+    # Windows title bars/taskbars behave best with .ico.
+    if os.name == "nt" and ico_path:
+        return QIcon(str(ico_path))
+    if png_path:
+        return QIcon(str(png_path))
+    if ico_path:
+        return QIcon(str(ico_path))
+    return QIcon()
+
+
+def resource_icon(relative_path: str, fallback_kind: str = "") -> QIcon:
+    """Load an SVG/PNG/ICO resource from bundled or source resource folders."""
+    icon_path = first_existing_path(relative_path, BUNDLED_RESOURCES_DIRS + [RESOURCES_DIR])
+    if icon_path:
+        icon = QIcon(str(icon_path))
+        if not icon.isNull():
+            return icon
+    return make_canvas_icon(fallback_kind) if fallback_kind else QIcon()
+
 
 # Built-in zone display names. Based on the RedGuides / ReadGuides zone short-name reference.
 # The folder scanner also includes unknown shortnames it finds in the selected map folder.
@@ -257,6 +319,166 @@ class LoadedMap:
 def clamp_rgb(value: str | int) -> int:
     number = int(float(str(value).strip()))
     return max(0, min(255, number))
+
+
+
+DEFAULT_MAP_PALETTES: dict[str, dict[str, Any]] = {
+    "EQ Map Standard": {
+        "name": "EQ Map Standard",
+        "description": "Balanced default palette for switching map files between light and dark backgrounds.",
+        "entries": [
+            {"name": "Wall / Structure", "light": [25, 25, 25], "dark": [210, 210, 210]},
+            {"name": "Secondary Wall", "light": [95, 95, 95], "dark": [150, 150, 150]},
+            {"name": "Background Detail", "light": [150, 150, 150], "dark": [95, 95, 95]},
+            {"name": "Label White", "light": [35, 35, 35], "dark": [255, 255, 255]},
+            {"name": "Label Yellow", "light": [150, 120, 0], "dark": [255, 255, 0]},
+            {"name": "Important Red", "light": [180, 0, 0], "dark": [255, 0, 0]},
+            {"name": "Safe Green", "light": [0, 130, 0], "dark": [0, 240, 0]},
+            {"name": "Water / Blue", "light": [0, 90, 200], "dark": [80, 170, 255]},
+            {"name": "Magic / Purple", "light": [110, 40, 190], "dark": [190, 110, 255]},
+            {"name": "Orange POI", "light": [170, 85, 0], "dark": [255, 145, 0]},
+            {"name": "Cyan POI", "light": [0, 130, 150], "dark": [80, 240, 255]},
+            {"name": "Soft Green", "light": [70, 160, 70], "dark": [140, 255, 140]},
+            {"name": "Vendor", "light": [145, 100, 0], "dark": [255, 190, 60]},
+            {"name": "Banker", "light": [80, 80, 80], "dark": [255, 255, 255]},
+            {"name": "Monster / Hostile", "light": [170, 0, 0], "dark": [255, 70, 70]},
+            {"name": "Guard / Friendly", "light": [0, 110, 0], "dark": [90, 255, 90]},
+            {"name": "Zone Connection", "light": [120, 95, 0], "dark": [255, 230, 0]},
+            {"name": "Portal / Travel", "light": [95, 40, 180], "dark": [190, 130, 255]},
+            {"name": "Water", "light": [0, 75, 180], "dark": [70, 165, 255]},
+        ],
+    },
+    "High Contrast": {
+        "name": "High Contrast",
+        "description": "Higher contrast lines and labels for very dark or very light backgrounds.",
+        "entries": [
+            {"name": "Wall / Structure", "light": [0, 0, 0], "dark": [255, 255, 255]},
+            {"name": "Secondary Wall", "light": [80, 80, 80], "dark": [185, 185, 185]},
+            {"name": "Label White", "light": [0, 0, 0], "dark": [255, 255, 255]},
+            {"name": "Label Yellow", "light": [120, 95, 0], "dark": [255, 235, 0]},
+            {"name": "Important Red", "light": [190, 0, 0], "dark": [255, 65, 65]},
+            {"name": "Safe Green", "light": [0, 120, 0], "dark": [80, 255, 80]},
+            {"name": "Water / Blue", "light": [0, 80, 220], "dark": [95, 190, 255]},
+            {"name": "Magic / Purple", "light": [120, 0, 220], "dark": [210, 125, 255]},
+            {"name": "Orange POI", "light": [190, 90, 0], "dark": [255, 165, 20]},
+        ],
+    },
+}
+
+
+def normalise_rgb(value: Any) -> tuple[int, int, int]:
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        return (clamp_rgb(value[0]), clamp_rgb(value[1]), clamp_rgb(value[2]))
+    raise ValueError(f"Invalid RGB value: {value}")
+
+
+def palette_entries(palette: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = []
+    for entry in palette.get("entries", []):
+        try:
+            entries.append({
+                "name": str(entry.get("name", "Colour")),
+                "light": normalise_rgb(entry.get("light")),
+                "dark": normalise_rgb(entry.get("dark")),
+            })
+        except Exception:
+            continue
+    return entries
+
+
+def load_user_palettes() -> dict[str, dict[str, Any]]:
+    palettes: dict[str, dict[str, Any]] = {}
+    PALETTES_DIR.mkdir(parents=True, exist_ok=True)
+
+    seen_paths: set[Path] = set()
+    for folder in BUNDLED_PALETTES_DIRS + [PALETTES_DIR]:
+        if not folder.exists():
+            continue
+        for path in sorted(folder.glob("*.json")):
+            try:
+                resolved = path.resolve()
+                if resolved in seen_paths:
+                    continue
+                seen_paths.add(resolved)
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if "name" in data and "entries" in data:
+                    palettes[str(data["name"])] = data
+            except Exception:
+                continue
+    return palettes
+
+
+def available_palettes() -> dict[str, dict[str, Any]]:
+    palettes = dict(DEFAULT_MAP_PALETTES)
+    palettes.update(load_user_palettes())
+    return palettes
+
+
+def save_user_palette(palette: dict[str, Any]) -> Path:
+    name = str(palette.get("name", "Custom Palette")).strip() or "Custom Palette"
+    safe_name = re.sub(r"[^A-Za-z0-9_. -]+", "_", name).strip().replace(" ", "_")
+    path = PALETTES_DIR / f"{safe_name}.json"
+    path.write_text(json.dumps(palette, indent=2), encoding="utf-8")
+    return path
+
+
+def rgb_distance_sq(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
+    return sum((int(a[i]) - int(b[i])) ** 2 for i in range(3))
+
+
+def map_rgb_to_palette(rgb: tuple[int, int, int], palette: dict[str, Any], target_mode: str) -> tuple[int, int, int]:
+    entries = palette_entries(palette)
+    if not entries:
+        return rgb
+    target_key = "dark" if target_mode.lower().startswith("dark") else "light"
+    best_entry = min(
+        entries,
+        key=lambda entry: min(
+            rgb_distance_sq(rgb, entry["light"]),
+            rgb_distance_sq(rgb, entry["dark"]),
+        ),
+    )
+    return best_entry[target_key]
+
+
+
+def palette_role_names(palette: dict[str, Any]) -> list[str]:
+    return [entry["name"] for entry in palette_entries(palette)]
+
+
+def palette_entry_by_name(palette: dict[str, Any], name: str) -> Optional[dict[str, Any]]:
+    for entry in palette_entries(palette):
+        if entry["name"] == name:
+            return entry
+    return None
+
+
+def infer_point_role_from_labels(labels: list[str], palette: dict[str, Any]) -> Optional[str]:
+    combined = " ".join(label.lower() for label in labels if label).strip()
+    if not combined:
+        return None
+
+    candidates = palette_role_names(palette)
+    def choose(*names: str) -> Optional[str]:
+        for preferred in names:
+            for candidate in candidates:
+                if preferred.lower() in candidate.lower():
+                    return candidate
+        return None
+
+    if any(word in combined for word in ["bank", "banker"]):
+        return choose("Banker", "Label White")
+    if any(word in combined for word in ["merchant", "vendor", "shop", "sell", "buy"]):
+        return choose("Vendor", "Orange", "Label Yellow")
+    if any(word in combined for word in ["guard"]):
+        return choose("Guard", "Friendly", "Safe Green")
+    if any(word in combined for word in ["portal", "translocator", "stone", "book"]):
+        return choose("Portal", "Travel", "Magic")
+    if any(word in combined for word in ["to ", " zone", "zoneline", "zone line", "harbor", "north", "south", "east", "west"]):
+        return choose("Zone Connection", "Label Yellow")
+    if any(word in combined for word in ["raid", "named", "monster", "beast", "dragon", "orc", "goblin", "kobold"]):
+        return choose("Monster", "Hostile", "Important Red")
+    return None
 
 
 def parse_l_record(row: str, file_path: Path, line_index: int) -> Optional[MapLineRecord]:
@@ -529,6 +751,144 @@ def snapshot_line(line: MapLineRecord) -> dict[str, Any]:
     }
 
 
+
+def make_canvas_icon(kind: str) -> QIcon:
+    pixmap = QPixmap(28, 28)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(238, 242, 248), 2)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+
+    if kind == "select":
+        # Cursor arrow similar to the mockup.
+        arrow = QPolygonF([
+            QPointF(7, 5), QPointF(7, 22), QPointF(11, 18),
+            QPointF(14, 24), QPointF(17, 22), QPointF(14, 16),
+            QPointF(20, 16)
+        ])
+        painter.setBrush(QBrush(QColor(238, 242, 248)))
+        painter.drawPolygon(arrow)
+        painter.setBrush(Qt.NoBrush)
+    elif kind == "pan":
+        # Simple outlined hand/pan icon.
+        painter.drawLine(QPointF(10, 15), QPointF(10, 8))
+        painter.drawLine(QPointF(14, 15), QPointF(14, 6))
+        painter.drawLine(QPointF(18, 16), QPointF(18, 8))
+        painter.drawLine(QPointF(22, 18), QPointF(22, 11))
+        painter.drawArc(7, 13, 18, 11, 180 * 16, 175 * 16)
+        painter.drawLine(QPointF(7, 16), QPointF(11, 22))
+        painter.drawLine(QPointF(11, 22), QPointF(21, 22))
+    elif kind in ("zoom", "zoom_in", "zoom_out"):
+        painter.drawEllipse(QPointF(12, 12), 6, 6)
+        painter.drawLine(QPointF(17, 17), QPointF(23, 23))
+        if kind != "zoom_out":
+            painter.drawLine(QPointF(12, 8), QPointF(12, 16))
+        painter.drawLine(QPointF(8, 12), QPointF(16, 12))
+    elif kind == "move_point":
+        painter.setBrush(QBrush(QColor(238, 242, 248)))
+        painter.drawEllipse(QPointF(14, 14), 5, 5)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLine(QPointF(14, 3), QPointF(14, 8))
+        painter.drawLine(QPointF(14, 20), QPointF(14, 25))
+        painter.drawLine(QPointF(3, 14), QPointF(8, 14))
+        painter.drawLine(QPointF(20, 14), QPointF(25, 14))
+    elif kind == "move_line":
+        painter.drawLine(QPointF(6, 20), QPointF(22, 8))
+        painter.setBrush(QBrush(QColor(238, 242, 248)))
+        painter.drawEllipse(QPointF(6, 20), 3, 3)
+        painter.drawEllipse(QPointF(22, 8), 3, 3)
+        painter.setBrush(Qt.NoBrush)
+    elif kind == "move_endpoint":
+        painter.drawLine(QPointF(7, 21), QPointF(21, 7))
+        painter.setBrush(QBrush(QColor(238, 242, 248)))
+        painter.drawEllipse(QPointF(21, 7), 4, 4)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(QPointF(7, 21), 3, 3)
+    elif kind == "undo":
+        # Bold standard undo arrow, with the arrow head clearly at the end.
+        pen = QPen(QColor(238, 242, 248), 3.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        path = QPainterPath(QPointF(21, 18))
+        path.lineTo(QPointF(13, 18))
+        path.cubicTo(QPointF(8.5, 18), QPointF(8.5, 10.5), QPointF(13, 10.5))
+        path.lineTo(QPointF(17, 10.5))
+        painter.drawPath(path)
+        painter.setBrush(QBrush(QColor(238, 242, 248)))
+        painter.setPen(Qt.NoPen)
+        painter.drawPolygon(QPolygonF([
+            QPointF(7.0, 10.5),
+            QPointF(13.0, 6.7),
+            QPointF(13.0, 14.3),
+        ]))
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(pen)
+    elif kind == "redo":
+        # Bold standard redo arrow, mirrored from undo.
+        pen = QPen(QColor(238, 242, 248), 3.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        path = QPainterPath(QPointF(5, 18))
+        path.lineTo(QPointF(13, 18))
+        path.cubicTo(QPointF(17.5, 18), QPointF(17.5, 10.5), QPointF(13, 10.5))
+        path.lineTo(QPointF(9, 10.5))
+        painter.drawPath(path)
+        painter.setBrush(QBrush(QColor(238, 242, 248)))
+        painter.setPen(Qt.NoPen)
+        painter.drawPolygon(QPolygonF([
+            QPointF(21.0, 10.5),
+            QPointF(15.0, 6.7),
+            QPointF(15.0, 14.3),
+        ]))
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(pen)
+    elif kind == "save":
+        # Simpler, chunkier floppy disk icon.
+        pen = QPen(QColor(238, 242, 248), 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.drawRoundedRect(6.5, 5.5, 15, 17, 1.5, 1.5)
+        painter.drawRect(9, 7, 7, 4)
+        painter.drawLine(QPointF(17.5, 7), QPointF(17.5, 11))
+        painter.drawRoundedRect(9, 15, 9, 5.5, 1.2, 1.2)
+    elif kind == "revert":
+        # Page with a heavy return arrow, inspired by the reference icon.
+        pen = QPen(QColor(238, 242, 248), 2.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        page = QPainterPath(QPointF(8, 4.5))
+        page.lineTo(QPointF(17, 4.5))
+        page.lineTo(QPointF(22, 9.5))
+        page.lineTo(QPointF(22, 22))
+        page.lineTo(QPointF(8, 22))
+        page.closeSubpath()
+        painter.drawPath(page)
+        painter.drawLine(QPointF(17, 4.5), QPointF(17, 10))
+        painter.drawLine(QPointF(17, 10), QPointF(22, 10))
+        # bold return arrow
+        painter.drawLine(QPointF(18.5, 18), QPointF(12.5, 18))
+        painter.drawArc(8.3, 14.2, 8.4, 7.6, 80 * 16, 190 * 16)
+        painter.setBrush(QBrush(QColor(238, 242, 248)))
+        painter.setPen(Qt.NoPen)
+        painter.drawPolygon(QPolygonF([
+            QPointF(10.0, 16.0),
+            QPointF(14.4, 12.8),
+            QPointF(14.4, 19.2),
+        ]))
+    elif kind == "fit":
+        painter.drawLine(QPointF(6, 11), QPointF(6, 6))
+        painter.drawLine(QPointF(6, 6), QPointF(11, 6))
+        painter.drawLine(QPointF(17, 6), QPointF(22, 6))
+        painter.drawLine(QPointF(22, 6), QPointF(22, 11))
+        painter.drawLine(QPointF(22, 17), QPointF(22, 22))
+        painter.drawLine(QPointF(22, 22), QPointF(17, 22))
+        painter.drawLine(QPointF(11, 22), QPointF(6, 22))
+        painter.drawLine(QPointF(6, 22), QPointF(6, 17))
+
+    painter.end()
+    return QIcon(pixmap)
+
+
 class EqMapView(QGraphicsView):
     def __init__(self, main_window: "EqMapMainWindow") -> None:
         super().__init__(main_window)
@@ -538,12 +898,14 @@ class EqMapView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setRubberBandSelectionMode(Qt.IntersectsItemShape)
+        self.setMouseTracking(True)
         self._is_panning = False
         self._last_pan_point = QPointF()
 
     def wheelEvent(self, event):
         factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
         self.scale(factor, factor)
+        self.main_window.update_canvas_overlays()
 
     def mousePressEvent(self, event):
         if event.button() in (Qt.MiddleButton, Qt.RightButton):
@@ -562,11 +924,13 @@ class EqMapView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event):
+        self.main_window.update_canvas_cursor_position(self.mapToScene(event.position().toPoint()))
         if self._is_panning:
             delta = event.position() - self._last_pan_point
             self._last_pan_point = event.position()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
+            self.main_window.update_canvas_overlays()
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -575,9 +939,182 @@ class EqMapView(QGraphicsView):
         if event.button() in (Qt.MiddleButton, Qt.RightButton) and self._is_panning:
             self._is_panning = False
             self.setCursor(Qt.ArrowCursor)
+            self.main_window.update_canvas_overlays()
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+
+class MapCanvasContainer(QWidget):
+    def __init__(self, main_window: "EqMapMainWindow") -> None:
+        super().__init__(main_window)
+        self.main_window = main_window
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.main_window.update_scene_pan_padding()
+        self.main_window.update_canvas_overlays()
+
+
+class CanvasControlsOverlay(QWidget):
+    def __init__(self, main_window: "EqMapMainWindow") -> None:
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.setObjectName("canvasControlsOverlay")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(8)
+
+        self.mode_buttons: dict[str, QToolButton] = {}
+
+        mode_specs = [
+            ("Select Only", "select", "Select / inspect records"),
+            ("Move Points", "move_point", "Move point records"),
+            ("Move Lines", "move_line", "Move whole line records"),
+            ("Move Line Endpoints", "move_endpoint", "Move selected line endpoints"),
+        ]
+        for mode_name, icon_name, tooltip in mode_specs:
+            button = QToolButton()
+            button.setObjectName("canvasControlButton")
+            button.setIcon(make_canvas_icon(icon_name))
+            button.setToolTip(tooltip)
+            button.setCheckable(True)
+            button.setIconSize(QSize(26, 26))
+            button.setFixedSize(42, 38)
+            button.clicked.connect(lambda checked=False, mode=mode_name: self.main_window.set_edit_mode_from_overlay(mode))
+            layout.addWidget(button)
+            self.mode_buttons[mode_name] = button
+
+        layout.addSpacing(8)
+
+        self.zoom_out_button = QToolButton()
+        self.zoom_out_button.setObjectName("canvasControlButton")
+        self.zoom_out_button.setIcon(make_canvas_icon("zoom_out"))
+        self.zoom_out_button.setToolTip("Zoom out")
+        self.zoom_in_button = QToolButton()
+        self.zoom_in_button.setObjectName("canvasControlButton")
+        self.zoom_in_button.setIcon(make_canvas_icon("zoom_in"))
+        self.zoom_in_button.setToolTip("Zoom in")
+        self.fit_button = QToolButton()
+        self.fit_button.setObjectName("canvasControlButton")
+        self.fit_button.setIcon(make_canvas_icon("fit"))
+        self.fit_button.setToolTip("Fit map")
+
+        for button in [self.zoom_out_button, self.zoom_in_button, self.fit_button]:
+            button.setIconSize(QSize(26, 26))
+            button.setFixedSize(42, 38)
+            layout.addWidget(button)
+
+        layout.addSpacing(8)
+
+        self.undo_button = QToolButton()
+        self.undo_button.setObjectName("canvasControlButton")
+        self.undo_button.setIcon(resource_icon("icons/undo.svg", "undo"))
+        self.undo_button.setToolTip("Undo")
+        self.redo_button = QToolButton()
+        self.redo_button.setObjectName("canvasControlButton")
+        self.redo_button.setIcon(resource_icon("icons/redo.svg", "redo"))
+        self.redo_button.setToolTip("Redo")
+        self.save_button = QToolButton()
+        self.save_button.setObjectName("canvasControlButton")
+        self.save_button.setIcon(resource_icon("icons/save.svg", "save"))
+        self.save_button.setToolTip("Save edits")
+        self.revert_button = QToolButton()
+        self.revert_button.setObjectName("canvasControlButton")
+        self.revert_button.setIcon(resource_icon("icons/revert.svg", "revert"))
+        self.revert_button.setToolTip("Revert unsaved edits from disk")
+
+        for button in [self.undo_button, self.redo_button, self.save_button, self.revert_button]:
+            button.setIconSize(QSize(26, 26))
+            button.setFixedSize(42, 38)
+            layout.addWidget(button)
+
+        self.coord_label = QLabel("X: 0.00   Y: 0.00   Z: 0.00")
+        self.coord_label.setObjectName("canvasOverlayText")
+        layout.addSpacing(18)
+        layout.addWidget(self.coord_label)
+        layout.addStretch(1)
+
+        self.zoom_label = QLabel("Zoom: 100%")
+        self.zoom_label.setObjectName("canvasOverlayText")
+        layout.addWidget(self.zoom_label)
+
+        self.zoom_out_button.clicked.connect(self.main_window.zoom_out)
+        self.zoom_in_button.clicked.connect(self.main_window.zoom_in)
+        self.fit_button.clicked.connect(self.main_window.fit_map)
+        self.undo_button.clicked.connect(self.main_window.undo)
+        self.redo_button.clicked.connect(self.main_window.redo)
+        self.save_button.clicked.connect(self.main_window.save_edits)
+        self.revert_button.clicked.connect(self.main_window.reload_from_disk)
+        self.set_active_mode("Select Only")
+
+    def update_status(self, text: str, zoom_text: str) -> None:
+        self.coord_label.setText(text)
+        self.zoom_label.setText(zoom_text)
+
+    def set_active_mode(self, mode_name: str) -> None:
+        for name, button in self.mode_buttons.items():
+            button.setChecked(name == mode_name)
+
+
+class MiniMapOverlay(QWidget):
+    def __init__(self, main_window: "EqMapMainWindow") -> None:
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.setObjectName("miniMapOverlay")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setMinimumSize(150, 120)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        outer = self.rect().adjusted(8, 8, -8, -8)
+        painter.setPen(QPen(QColor(170, 170, 170), 1))
+        painter.setBrush(QBrush(QColor(20, 20, 20, 180)))
+        painter.drawRect(outer)
+
+        scene_rect = self.main_window.scene.itemsBoundingRect()
+        if scene_rect.isNull() or scene_rect.width() <= 0 or scene_rect.height() <= 0:
+            painter.setPen(QColor(150, 150, 150))
+            painter.drawText(outer, Qt.AlignCenter, "No map")
+            painter.end()
+            return
+
+        inner = outer.adjusted(10, 10, -10, -10)
+        scale = min(inner.width() / scene_rect.width(), inner.height() / scene_rect.height())
+        draw_w = scene_rect.width() * scale
+        draw_h = scene_rect.height() * scale
+        off_x = inner.x() + (inner.width() - draw_w) / 2
+        off_y = inner.y() + (inner.height() - draw_h) / 2
+
+        def map_point(point: QPointF) -> QPointF:
+            return QPointF(
+                off_x + (point.x() - scene_rect.x()) * scale,
+                off_y + (point.y() - scene_rect.y()) * scale,
+            )
+
+        painter.setPen(QPen(QColor(135, 135, 135), 1))
+        for record in self.main_window.loaded_map.lines:
+            if getattr(record, "deleted", False) or not self.main_window.layer_visible.get(record.file_path, True):
+                continue
+            p1 = self.main_window.mapper.map_to_scene(record.x1, record.y1)
+            p2 = self.main_window.mapper.map_to_scene(record.x2, record.y2)
+            painter.drawLine(map_point(p1), map_point(p2))
+
+        painter.setPen(QPen(QColor(235, 235, 235), 2))
+        viewport_poly = self.main_window.view.mapToScene(self.main_window.view.viewport().rect())
+        viewport_rect = viewport_poly.boundingRect()
+        vr = QRectF(
+            off_x + (viewport_rect.x() - scene_rect.x()) * scale,
+            off_y + (viewport_rect.y() - scene_rect.y()) * scale,
+            viewport_rect.width() * scale,
+            viewport_rect.height() * scale,
+        )
+        painter.drawRect(vr)
+        painter.end()
 
 
 class MovablePointMarker(QGraphicsEllipseItem):
@@ -815,6 +1352,125 @@ class ColorChoiceDialog(QDialog):
         super().accept()
 
 
+
+class PaletteEditorDialog(QDialog):
+    def __init__(self, parent=None, palette: Optional[dict[str, Any]] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Save Colour Palette")
+        self.resize(720, 520)
+        self.saved_palette: Optional[dict[str, Any]] = None
+
+        palette = palette or DEFAULT_MAP_PALETTES["EQ Map Standard"]
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        layout.addLayout(form)
+
+        self.name_edit = QLineEdit(str(palette.get("name", "Custom Palette")))
+        form.addRow("Palette name", self.name_edit)
+
+        self.description_edit = QLineEdit(str(palette.get("description", "")))
+        form.addRow("Description", self.description_edit)
+
+        layout.addWidget(QLabel("Each entry has a light-mode colour and a dark-mode colour. Palette switching maps each record to the nearest entry, then applies the chosen light/dark version."))
+
+        self.entries_list = QListWidget()
+        layout.addWidget(self.entries_list, 1)
+
+        button_row = QHBoxLayout()
+        self.add_button = QPushButton("Add Entry")
+        self.remove_button = QPushButton("Remove Selected")
+        self.light_button = QPushButton("Pick Light Colour")
+        self.dark_button = QPushButton("Pick Dark Colour")
+        button_row.addWidget(self.add_button)
+        button_row.addWidget(self.remove_button)
+        button_row.addWidget(self.light_button)
+        button_row.addWidget(self.dark_button)
+        layout.addLayout(button_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.add_button.clicked.connect(self.add_entry)
+        self.remove_button.clicked.connect(self.remove_selected)
+        self.light_button.clicked.connect(lambda: self.pick_entry_colour("light"))
+        self.dark_button.clicked.connect(lambda: self.pick_entry_colour("dark"))
+
+        for entry in palette_entries(palette):
+            self.add_entry(entry)
+
+    def add_entry(self, entry: Optional[dict[str, Any]] = None) -> None:
+        if entry is None or isinstance(entry, bool):
+            entry = {"name": "Custom Colour", "light": (0, 0, 0), "dark": (255, 255, 255)}
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, {
+            "name": entry["name"],
+            "light": tuple(entry["light"]),
+            "dark": tuple(entry["dark"]),
+        })
+        self.entries_list.addItem(item)
+        self.refresh_item(item)
+        self.entries_list.setCurrentItem(item)
+
+    def refresh_item(self, item: QListWidgetItem) -> None:
+        data = item.data(Qt.UserRole)
+        light = tuple(data["light"])
+        dark = tuple(data["dark"])
+        item.setText(f'{data["name"]}    Light RGB {light}  →  Dark RGB {dark}')
+        icon = QPixmap(48, 16)
+        icon.fill(Qt.transparent)
+        painter = QPainter(icon)
+        painter.fillRect(0, 0, 24, 16, QColor(*light))
+        painter.fillRect(24, 0, 24, 16, QColor(*dark))
+        painter.setPen(QPen(QColor(120, 120, 120), 1))
+        painter.drawRect(0, 0, 47, 15)
+        painter.end()
+        item.setIcon(QIcon(icon))
+
+    def remove_selected(self) -> None:
+        for item in self.entries_list.selectedItems():
+            row = self.entries_list.row(item)
+            self.entries_list.takeItem(row)
+
+    def pick_entry_colour(self, key: str) -> None:
+        item = self.entries_list.currentItem()
+        if item is None:
+            return
+        data = item.data(Qt.UserRole)
+        current = QColor(*data[key])
+        colour = choose_colour_dialog(current, self, f"Choose {key} colour")
+        if not colour.isValid():
+            return
+        data[key] = (colour.red(), colour.green(), colour.blue())
+        item.setData(Qt.UserRole, data)
+        self.refresh_item(item)
+
+    def accept(self) -> None:
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Palette Name Required", "Please enter a palette name.")
+            return
+        entries = []
+        for row in range(self.entries_list.count()):
+            data = self.entries_list.item(row).data(Qt.UserRole)
+            entries.append({
+                "name": data["name"],
+                "light": list(data["light"]),
+                "dark": list(data["dark"]),
+            })
+        if not entries:
+            QMessageBox.warning(self, "Palette Empty", "Please add at least one palette entry.")
+            return
+        self.saved_palette = {
+            "name": name,
+            "description": self.description_edit.text().strip(),
+            "entries": entries,
+        }
+        super().accept()
+
+
 class PreferencesDialog(QDialog):
     def __init__(self, main_window: "EqMapMainWindow") -> None:
         super().__init__(main_window)
@@ -937,6 +1593,10 @@ class SidePanel(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        heading = QLabel("Inspector")
+        heading.setStyleSheet("font-size: 15px; font-weight: bold;")
+        layout.addWidget(heading)
 
         controls_group = QGroupBox("Map Controls")
         controls_layout = QVBoxLayout(controls_group)
@@ -974,100 +1634,160 @@ class SidePanel(QWidget):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
+
         selection_tab = QWidget()
         selection_layout = QVBoxLayout(selection_tab)
+        selection_layout.setContentsMargins(8, 8, 8, 8)
+        selection_layout.setSpacing(10)
 
+        inspector_header_row = QHBoxLayout()
+        self.inspector_header_label = QLabel("Inspector")
+        self.inspector_header_label.setObjectName("inspectorHeaderLabel")
+        inspector_header_row.addWidget(self.inspector_header_label)
+        inspector_header_row.addStretch(1)
+        self.inspector_close_button = QToolButton()
+        self.inspector_close_button.setObjectName("inspectorUtilityButton")
+        self.inspector_close_button.setText("✕")
+        self.inspector_close_button.setToolTip("Hide inspector")
+        inspector_header_row.addWidget(self.inspector_close_button)
+        selection_layout.addLayout(inspector_header_row)
+
+        summary_group = QGroupBox("Selection Summary")
+        summary_layout = QVBoxLayout(summary_group)
+        summary_layout.setSpacing(6)
         self.title_label = QLabel("No selection")
-        self.title_label.setStyleSheet("font-weight: bold;")
-        selection_layout.addWidget(self.title_label)
+        self.title_label.setObjectName("inspectorSummaryTitle")
+        summary_layout.addWidget(self.title_label)
 
         self.source_label = QLabel("")
         self.source_label.setWordWrap(True)
-        selection_layout.addWidget(self.source_label)
+        self.source_label.setObjectName("inspectorSummaryMeta")
+        summary_layout.addWidget(self.source_label)
 
-        form = QFormLayout()
-        selection_layout.addLayout(form)
+        summary_action_row = QHBoxLayout()
+        self.multi_select_label = QLabel("Multi-select: none")
+        self.multi_select_label.setWordWrap(True)
+        self.multi_select_label.setObjectName("inspectorMultiSummary")
+        summary_action_row.addWidget(self.multi_select_label, 1)
+        self.delete_selected_button = QPushButton("Delete Selected")
+        self.delete_selected_button.setObjectName("dangerButton")
+        self.delete_selected_button.setEnabled(False)
+        summary_action_row.addWidget(self.delete_selected_button)
+        summary_layout.addLayout(summary_action_row)
+        selection_layout.addWidget(summary_group)
 
+        label_group = QGroupBox("Label")
+        label_layout = QVBoxLayout(label_group)
         self.label_edit = QLineEdit()
-        form.addRow("Label", self.label_edit)
+        self.label_edit.setPlaceholderText("Point label")
+        label_layout.addWidget(self.label_edit)
+        selection_layout.addWidget(label_group)
 
-        self.point_coords_label = QLabel("Point Coordinates")
-        self.point_coords_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
-        form.addRow(self.point_coords_label)
-
+        point_group = QGroupBox("Point Coordinates")
+        point_layout = QHBoxLayout(point_group)
+        point_layout.setSpacing(8)
         self.x_spin = self.coord_spin()
         self.y_spin = self.coord_spin()
         self.z_spin = self.coord_spin()
-        form.addRow("X", self.x_spin)
-        form.addRow("Y", self.y_spin)
-        form.addRow("Z", self.z_spin)
+        for _label, _spin in (("X", self.x_spin), ("Y", self.y_spin), ("Z", self.z_spin)):
+            col = QVBoxLayout()
+            lbl = QLabel(_label)
+            lbl.setObjectName("compactFieldLabel")
+            col.addWidget(lbl)
+            col.addWidget(_spin)
+            point_layout.addLayout(col)
+        selection_layout.addWidget(point_group)
+        self.point_coords_label = point_group
 
-        self.endpoint1_label = QLabel("Line Endpoint 1 Coordinates")
-        self.endpoint1_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
-        form.addRow(self.endpoint1_label)
+        line_row = QHBoxLayout()
+        line_row.setSpacing(8)
 
+        endpoint1_group = QGroupBox("Line Endpoint 1")
+        endpoint1_layout = QVBoxLayout(endpoint1_group)
         self.x1_spin = self.coord_spin()
         self.y1_spin = self.coord_spin()
         self.z1_spin = self.coord_spin()
-        form.addRow("X1", self.x1_spin)
-        form.addRow("Y1", self.y1_spin)
-        form.addRow("Z1", self.z1_spin)
+        for _label, _spin in (("X1", self.x1_spin), ("Y1", self.y1_spin), ("Z1", self.z1_spin)):
+            col = QVBoxLayout()
+            lbl = QLabel(_label)
+            lbl.setObjectName("compactFieldLabel")
+            col.addWidget(lbl)
+            col.addWidget(_spin)
+            endpoint1_layout.addLayout(col)
+        line_row.addWidget(endpoint1_group)
+        self.endpoint1_label = endpoint1_group
 
-        self.endpoint2_label = QLabel("Line Endpoint 2 Coordinates")
-        self.endpoint2_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
-        form.addRow(self.endpoint2_label)
-
+        endpoint2_group = QGroupBox("Line Endpoint 2")
+        endpoint2_layout = QVBoxLayout(endpoint2_group)
         self.x2_spin = self.coord_spin()
         self.y2_spin = self.coord_spin()
         self.z2_spin = self.coord_spin()
-        form.addRow("X2", self.x2_spin)
-        form.addRow("Y2", self.y2_spin)
-        form.addRow("Z2", self.z2_spin)
+        for _label, _spin in (("X2", self.x2_spin), ("Y2", self.y2_spin), ("Z2", self.z2_spin)):
+            col = QVBoxLayout()
+            lbl = QLabel(_label)
+            lbl.setObjectName("compactFieldLabel")
+            col.addWidget(lbl)
+            col.addWidget(_spin)
+            endpoint2_layout.addLayout(col)
+        line_row.addWidget(endpoint2_group)
+        self.endpoint2_label = endpoint2_group
 
-        self.color_label = QLabel("Color")
-        self.color_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
-        form.addRow(self.color_label)
+        selection_layout.addLayout(line_row)
 
+        colour_group = QGroupBox("Color (RGB)")
+        colour_layout = QHBoxLayout(colour_group)
+        colour_form_wrap = QVBoxLayout()
+        self.color_label = colour_group
         self.r_spin = self.rgb_spin()
         self.g_spin = self.rgb_spin()
         self.b_spin = self.rgb_spin()
-        form.addRow("R", self.r_spin)
-        form.addRow("G", self.g_spin)
-        form.addRow("B", self.b_spin)
+        for _label, _spin in (("R", self.r_spin), ("G", self.g_spin), ("B", self.b_spin)):
+            row = QHBoxLayout()
+            lbl = QLabel(_label)
+            lbl.setObjectName("compactFieldLabel")
+            lbl.setMinimumWidth(12)
+            row.addWidget(lbl)
+            row.addWidget(_spin, 1)
+            colour_form_wrap.addLayout(row)
+        colour_layout.addLayout(colour_form_wrap, 1)
 
+        colour_side = QVBoxLayout()
+        self.color_preview = QLabel("")
+        self.color_preview.setObjectName("colourPreviewSwatch")
+        self.color_preview.setMinimumSize(54, 54)
+        self.color_preview.setMaximumWidth(64)
+        colour_side.addWidget(self.color_preview, 0, Qt.AlignLeft)
+        self.pick_color_btn = QPushButton("Pick Colour")
+        colour_side.addWidget(self.pick_color_btn)
+        colour_side.addStretch(1)
+        colour_layout.addLayout(colour_side)
+        selection_layout.addWidget(colour_group)
+
+        point_size_group = QGroupBox("Point Size")
+        point_size_layout = QVBoxLayout(point_size_group)
         self.size_spin = QDoubleSpinBox()
         self.size_spin.setRange(0.1, 99.0)
         self.size_spin.setSingleStep(0.5)
         self.size_spin.setDecimals(2)
-        form.addRow("Point Size", self.size_spin)
-
-        color_row = QHBoxLayout()
-        self.color_preview = QLabel("      ")
-        self.color_preview.setMinimumWidth(60)
-        self.pick_color_btn = QPushButton("Pick Colour")
-        color_row.addWidget(self.color_preview)
-        color_row.addWidget(self.pick_color_btn)
-        selection_layout.addLayout(color_row)
+        point_size_layout.addWidget(self.size_spin)
+        selection_layout.addWidget(point_size_group)
 
         self.apply_button = QPushButton("Apply Changes")
+        self.apply_button.setObjectName("primaryButton")
         selection_layout.addWidget(self.apply_button)
 
         self.raw_label = QLabel("")
         self.raw_label.setWordWrap(True)
-        self.raw_label.setStyleSheet("font-size: 10px;")
+        self.raw_label.setObjectName("inspectorHelperText")
         selection_layout.addWidget(self.raw_label)
 
-        self.multi_select_label = QLabel("Multi-select: none")
-        self.multi_select_label.setWordWrap(True)
-        self.multi_select_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
-        selection_layout.addWidget(self.multi_select_label)
-
-        self.delete_selected_button = QPushButton("Delete Selected Points/Lines")
-        self.delete_selected_button.setEnabled(False)
-        selection_layout.addWidget(self.delete_selected_button)
+        self.footer_summary_label = QLabel("Multi-select: 0 item(s)")
+        self.footer_summary_label.setObjectName("inspectorFooterSummary")
+        self.footer_summary_label.setWordWrap(True)
+        selection_layout.addWidget(self.footer_summary_label)
 
         selection_layout.addStretch(1)
-        self.tabs.addTab(selection_tab, "Selected Item")
+        self.tabs.addTab(selection_tab, "Inspector")
 
         layers_tab = QWidget()
         self.layers_layout = QVBoxLayout(layers_tab)
@@ -1107,6 +1827,47 @@ class SidePanel(QWidget):
         recolour_layout.addRow(self.bulk_match_colour_button)
         recolour_layout.addRow(self.bulk_apply_colour_button)
         bulk_layout.addWidget(recolour_group)
+
+        palette_group = QGroupBox("Palette Conversion")
+        palette_layout = QVBoxLayout(palette_group)
+
+        palette_form = QFormLayout()
+        self.palette_combo = QComboBox()
+        self.palette_target_combo = QComboBox()
+        self.palette_target_combo.addItems(["Dark", "Light"])
+        self.palette_preview_label = QLabel("Choose a palette to convert map colours between light and dark versions.")
+        self.palette_preview_label.setWordWrap(True)
+        self.palette_preview_label.setObjectName("inspectorHelperText")
+        palette_form.addRow("Palette", self.palette_combo)
+        palette_form.addRow("Target", self.palette_target_combo)
+        palette_form.addRow(self.palette_preview_label)
+        palette_layout.addLayout(palette_form)
+
+        palette_layout.addWidget(QLabel("Mapping Preview"))
+        self.palette_mapping_list = QListWidget()
+        self.palette_mapping_list.setMinimumHeight(190)
+        self.palette_mapping_widgets: dict[int, QComboBox] = {}
+        palette_layout.addWidget(self.palette_mapping_list)
+
+        palette_buttons = QHBoxLayout()
+        self.palette_rebuild_mapping_button = QPushButton("Build Mapping Preview")
+        self.palette_auto_mapping_button = QPushButton("Auto-map")
+        self.palette_apply_mapping_button = QPushButton("Apply Mapping")
+        palette_buttons.addWidget(self.palette_rebuild_mapping_button)
+        palette_buttons.addWidget(self.palette_auto_mapping_button)
+        palette_buttons.addWidget(self.palette_apply_mapping_button)
+        palette_layout.addLayout(palette_buttons)
+
+        palette_manage_buttons = QHBoxLayout()
+        self.palette_apply_visible_button = QPushButton("Quick Apply Nearest")
+        self.palette_edit_save_button = QPushButton("Edit / Save Palette")
+        self.palette_open_folder_button = QPushButton("Open Palettes Folder")
+        palette_manage_buttons.addWidget(self.palette_apply_visible_button)
+        palette_manage_buttons.addWidget(self.palette_edit_save_button)
+        palette_manage_buttons.addWidget(self.palette_open_folder_button)
+        palette_layout.addLayout(palette_manage_buttons)
+
+        bulk_layout.addWidget(palette_group)
         self.tabs.addTab(bulk_tab, "Bulk Colours")
 
         points_tab = QWidget()
@@ -1194,6 +1955,7 @@ class SidePanel(QWidget):
         self.redo_button.clicked.connect(self.main_window.redo)
         self.reload_button.clicked.connect(self.main_window.reload_from_disk)
         self.restore_button.clicked.connect(self.main_window.restore_from_backup)
+        self.inspector_close_button.clicked.connect(self.main_window.toggle_sidebar)
         self.pick_color_btn.clicked.connect(self.pick_color)
         self.apply_button.clicked.connect(self.apply_changes)
         self.delete_selected_button.clicked.connect(self.main_window.delete_selected_records)
@@ -1202,6 +1964,14 @@ class SidePanel(QWidget):
         self.bulk_pick_colour_button.clicked.connect(self.pick_bulk_colour)
         self.bulk_match_colour_button.clicked.connect(self.match_bulk_colour_from_list)
         self.bulk_apply_colour_button.clicked.connect(self.main_window.apply_bulk_colour_to_selected_matching)
+        self.palette_apply_visible_button.clicked.connect(self.main_window.apply_palette_to_visible_records)
+        self.palette_rebuild_mapping_button.clicked.connect(self.rebuild_palette_mapping_preview)
+        self.palette_auto_mapping_button.clicked.connect(self.auto_map_palette_preview)
+        self.palette_apply_mapping_button.clicked.connect(self.main_window.apply_palette_mapping_preview)
+        self.palette_edit_save_button.clicked.connect(self.edit_save_palette)
+        self.palette_open_folder_button.clicked.connect(self.open_palettes_folder)
+        self.palette_combo.currentTextChanged.connect(lambda _text: (self.update_palette_preview(), self.rebuild_palette_mapping_preview()))
+        self.palette_target_combo.currentTextChanged.connect(lambda _text: self.rebuild_palette_mapping_preview())
         self.point_search_button.clicked.connect(self.rebuild_points_list)
         self.point_search_edit.returnPressed.connect(self.rebuild_points_list)
         self.point_select_matches_button.clicked.connect(self.check_matching_points)
@@ -1212,12 +1982,14 @@ class SidePanel(QWidget):
         self.choose_map_folder_button.clicked.connect(self.main_window.choose_map_folder)
         self.zone_search_button.clicked.connect(self.main_window.rebuild_zone_list)
         self.zone_search_edit.returnPressed.connect(self.main_window.rebuild_zone_list)
+        self.zone_search_edit.textChanged.connect(lambda _text: self.main_window.rebuild_zone_list())
         self.zone_reset_button.clicked.connect(self.main_window.reset_zone_search)
         self.open_selected_zone_button.clicked.connect(self.main_window.open_selected_zone)
         self.zones_list.itemDoubleClicked.connect(lambda item: self.main_window.open_selected_zone())
         self.pending_refresh_button.clicked.connect(self.rebuild_pending_changes)
         self.pending_revert_all_button.clicked.connect(self.main_window.reload_from_disk)
         self.pending_save_button.clicked.connect(self.main_window.save_edits)
+        self.refresh_palette_combo()
 
     def coord_spin(self) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
@@ -1308,6 +2080,10 @@ class SidePanel(QWidget):
             is_point_summary = 1 if isinstance(record, MapPointRecord) else 0
             is_line_summary = 1 if isinstance(record, MapLineRecord) else 0
             self.set_multi_selection_summary(is_point_summary, is_line_summary)
+            if is_point:
+                self.footer_summary_label.setText(f"Single selection — Point from {record.file_path.name}")
+            elif is_line:
+                self.footer_summary_label.setText(f"Single selection — Line from {record.file_path.name}")
 
         self.update_color_preview()
         self._loading = False
@@ -1502,6 +2278,191 @@ class SidePanel(QWidget):
     def list_text_colour(self) -> QColor:
         return QColor(245, 245, 245) if getattr(self.main_window, "dark_ui", False) else QColor(0, 0, 0)
 
+
+    def refresh_palette_combo(self) -> None:
+        if not hasattr(self, "palette_combo"):
+            return
+        current = self.palette_combo.currentText()
+        self.palette_combo.blockSignals(True)
+        self.palette_combo.clear()
+        for name in sorted(available_palettes().keys()):
+            self.palette_combo.addItem(name)
+        if current:
+            index = self.palette_combo.findText(current)
+            if index >= 0:
+                self.palette_combo.setCurrentIndex(index)
+        self.palette_combo.blockSignals(False)
+        self.update_palette_preview()
+        self.rebuild_palette_mapping_preview()
+
+    def selected_palette(self) -> Optional[dict[str, Any]]:
+        if not hasattr(self, "palette_combo"):
+            return None
+        return available_palettes().get(self.palette_combo.currentText())
+
+    def update_palette_preview(self) -> None:
+        palette = self.selected_palette()
+        if not palette:
+            self.palette_preview_label.setText("No palette selected.")
+            return
+        entries = palette_entries(palette)
+        sample = ", ".join(entry["name"] for entry in entries[:5])
+        if len(entries) > 5:
+            sample += f", +{len(entries) - 5} more"
+        self.palette_preview_label.setText(
+            f"{palette.get('description', '')}\nEntries: {len(entries)}\n{sample}".strip()
+        )
+
+
+    def current_palette_mapping(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        palette = self.selected_palette()
+        if not palette:
+            return rows
+        target_key = "dark" if self.palette_target_combo.currentText().lower().startswith("dark") else "light"
+        for row in range(self.palette_mapping_list.count()):
+            item = self.palette_mapping_list.item(row)
+            data = item.data(Qt.UserRole)
+            combo = self.palette_mapping_widgets.get(id(item))
+            if not data or combo is None:
+                continue
+            role_name = combo.currentText()
+            if role_name == "Skip":
+                continue
+            entry = palette_entry_by_name(palette, role_name)
+            if not entry:
+                continue
+            rows.append({
+                "scope": data["scope"],
+                "rgb": tuple(data["rgb"]),
+                "role": role_name,
+                "target_rgb": tuple(entry[target_key]),
+                "count": data["count"],
+            })
+        return rows
+
+    def visible_colour_groups_for_mapping(self) -> list[dict[str, Any]]:
+        point_groups: dict[tuple[int, int, int], dict[str, Any]] = {}
+        line_groups: dict[tuple[int, int, int], dict[str, Any]] = {}
+
+        for point in self.main_window.loaded_map.points:
+            if getattr(point, "deleted", False) or not self.main_window.layer_visible.get(point.file_path, True):
+                continue
+            rgb = (point.r, point.g, point.b)
+            group = point_groups.setdefault(rgb, {"scope": "Points", "rgb": rgb, "count": 0, "labels": []})
+            group["count"] += 1
+            if point.label:
+                group["labels"].append(point.label)
+
+        for line in self.main_window.loaded_map.lines:
+            if getattr(line, "deleted", False) or not self.main_window.layer_visible.get(line.file_path, True):
+                continue
+            rgb = (line.r, line.g, line.b)
+            group = line_groups.setdefault(rgb, {"scope": "Lines", "rgb": rgb, "count": 0, "labels": []})
+            group["count"] += 1
+
+        groups = list(point_groups.values()) + list(line_groups.values())
+        groups.sort(key=lambda group: (group["scope"], -group["count"], group["rgb"]))
+        return groups
+
+    def best_role_for_group(self, group: dict[str, Any], palette: dict[str, Any]) -> str:
+        inferred = None
+        if group["scope"] == "Points":
+            inferred = infer_point_role_from_labels(group.get("labels", []), palette)
+        if inferred:
+            return inferred
+
+        entries = palette_entries(palette)
+        if not entries:
+            return "Skip"
+        rgb = tuple(group["rgb"])
+        best_entry = min(
+            entries,
+            key=lambda entry: min(rgb_distance_sq(rgb, entry["light"]), rgb_distance_sq(rgb, entry["dark"])),
+        )
+        return best_entry["name"]
+
+    def rebuild_palette_mapping_preview(self) -> None:
+        if not hasattr(self, "palette_mapping_list"):
+            return
+        palette = self.selected_palette()
+        self.palette_mapping_list.clear()
+        self.palette_mapping_widgets.clear()
+        if not palette:
+            return
+
+        role_names = ["Skip"] + palette_role_names(palette)
+        groups = self.visible_colour_groups_for_mapping()
+        if not groups:
+            self.palette_mapping_list.addItem(QListWidgetItem("No visible colours to map."))
+            return
+
+        for group in groups:
+            rgb = tuple(group["rgb"])
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, group)
+            self.palette_mapping_list.addItem(item)
+
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(4, 2, 4, 2)
+            row_layout.setSpacing(8)
+
+            swatch = QLabel()
+            swatch.setFixedSize(22, 22)
+            swatch.setStyleSheet(f"background-color: rgb({rgb[0]}, {rgb[1]}, {rgb[2]}); border: 1px solid #777;")
+
+            sample_labels = ""
+            if group["scope"] == "Points" and group.get("labels"):
+                sample = ", ".join(group["labels"][:3])
+                sample_labels = f" — {sample}"
+
+            label = QLabel(f'{group["scope"]} RGB {rgb}   Count: {group["count"]}{sample_labels}')
+            label.setWordWrap(True)
+
+            combo = QComboBox()
+            combo.addItems(role_names)
+            combo.setCurrentText(self.best_role_for_group(group, palette))
+            combo.setMinimumWidth(160)
+
+            row_layout.addWidget(swatch)
+            row_layout.addWidget(label, 1)
+            row_layout.addWidget(combo)
+
+            item.setSizeHint(row_widget.sizeHint())
+            self.palette_mapping_list.setItemWidget(item, row_widget)
+            self.palette_mapping_widgets[id(item)] = combo
+
+    def auto_map_palette_preview(self) -> None:
+        palette = self.selected_palette()
+        if not palette:
+            return
+        for row in range(self.palette_mapping_list.count()):
+            item = self.palette_mapping_list.item(row)
+            group = item.data(Qt.UserRole)
+            combo = self.palette_mapping_widgets.get(id(item))
+            if not group or combo is None:
+                continue
+            combo.setCurrentText(self.best_role_for_group(group, palette))
+
+    def edit_save_palette(self) -> None:
+        palette = self.selected_palette() or DEFAULT_MAP_PALETTES["EQ Map Standard"]
+        dialog = PaletteEditorDialog(self, palette)
+        if dialog.exec() == QDialog.Accepted and dialog.saved_palette:
+            path = save_user_palette(dialog.saved_palette)
+            self.refresh_palette_combo()
+            index = self.palette_combo.findText(dialog.saved_palette["name"])
+            if index >= 0:
+                self.palette_combo.setCurrentIndex(index)
+            self.main_window.status_label.setText(f"Saved palette: {path.name}")
+
+    def open_palettes_folder(self) -> None:
+        try:
+            PALETTES_DIR.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(PALETTES_DIR))
+        except Exception as exc:
+            QMessageBox.warning(self, "Palettes Folder", f"Could not open palettes folder:\n{exc}")
+
     def pick_bulk_colour(self) -> None:
         c = choose_colour_dialog(QColor(self.bulk_new_r.value(), self.bulk_new_g.value(), self.bulk_new_b.value()), self, "Choose new colour")
         if c.isValid():
@@ -1558,6 +2519,9 @@ class SidePanel(QWidget):
             item.setForeground(self.list_text_colour())
             self.line_colour_list.addItem(item)
 
+        if hasattr(self, "palette_mapping_list"):
+            self.rebuild_palette_mapping_preview()
+
     def reset_point_search(self) -> None:
         self.point_search_edit.clear()
         self.rebuild_points_list()
@@ -1591,10 +2555,320 @@ class SidePanel(QWidget):
                 ids.add(item.data(Qt.UserRole))
         return [point for point in self.main_window.loaded_map.points if id(point) in ids and not getattr(point, "deleted", False)]
 
+
+
+class OptionOneExplorerPanel(QWidget):
+    """Option 1 style left explorer panel with a navigation rail."""
+    PAGE_ORDER = ["Zones", "Layers", "Bulk Colours", "Points", "Pending Changes"]
+
+    def __init__(self, main_window: "EqMapMainWindow") -> None:
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.setMinimumWidth(310)
+        self.setMaximumWidth(420)
+        self.nav_buttons: dict[str, QToolButton] = {}
+        self._layers_checkbox_widgets: list[QCheckBox] = []
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.rail_widget = QWidget()
+        self.rail_widget.setObjectName("explorerRail")
+        self.rail_widget.setFixedWidth(84)
+        rail_layout = QVBoxLayout(self.rail_widget)
+        rail_layout.setContentsMargins(10, 14, 10, 14)
+        rail_layout.setSpacing(8)
+
+        self.explorer_logo = QLabel("Explorer")
+        self.explorer_logo.setObjectName("explorerRailTitle")
+        self.explorer_logo.setWordWrap(True)
+        rail_layout.addWidget(self.explorer_logo)
+
+        button_specs = [
+            ("Zones", "🗺\nZones"),
+            ("Layers", "▤\nLayers"),
+            ("Bulk Colours", "◔\nBulk\nColours"),
+            ("Points", "⌖\nPoints"),
+            ("Pending Changes", "↺\nPending"),
+        ]
+        for page_name, label in button_specs:
+            button = QToolButton()
+            button.setObjectName("explorerNavButton")
+            button.setText(label)
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            button.clicked.connect(lambda checked=False, name=page_name: self.set_page(name))
+            rail_layout.addWidget(button)
+            self.nav_buttons[page_name] = button
+
+        rail_layout.addStretch(1)
+        root.addWidget(self.rail_widget)
+
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName("explorerContent")
+        content_layout = QVBoxLayout(self.content_widget)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        content_layout.setSpacing(10)
+
+        self.section_title = QLabel("Zones")
+        self.section_title.setObjectName("explorerSectionTitle")
+        content_layout.addWidget(self.section_title)
+
+        self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("explorerPageStack")
+        content_layout.addWidget(self.page_stack, 1)
+
+        # Zones page
+        self.zones_page = QWidget()
+        zones_layout = QVBoxLayout(self.zones_page)
+        zones_layout.setContentsMargins(0, 0, 0, 0)
+        zones_layout.setSpacing(8)
+
+        self.zone_quick_search = QLineEdit()
+        self.zone_quick_search.setPlaceholderText("Search zones...")
+        zones_layout.addWidget(self.zone_quick_search)
+
+        self.zone_preview_list = QListWidget()
+        zones_layout.addWidget(self.zone_preview_list, 1)
+
+        self.open_zones_button = QPushButton("Open Zone Browser")
+        zones_layout.addWidget(self.open_zones_button)
+
+        self.current_zone_label = QLabel("No zone loaded")
+        self.current_zone_label.setWordWrap(True)
+        self.current_zone_label.setObjectName("explorerSubtleText")
+        zones_layout.addWidget(self.current_zone_label)
+        self.page_stack.addWidget(self.zones_page)
+
+        # Layers page
+        self.layers_page = QWidget()
+        layers_layout = QVBoxLayout(self.layers_page)
+        layers_layout.setContentsMargins(0, 0, 0, 0)
+        layers_layout.setSpacing(8)
+
+        self.layers_intro = QLabel("Toggle which loaded files are visible.")
+        self.layers_intro.setWordWrap(True)
+        self.layers_intro.setObjectName("explorerSubtleText")
+        layers_layout.addWidget(self.layers_intro)
+
+        self.layers_summary = QLabel("No files loaded")
+        self.layers_summary.setWordWrap(True)
+        self.layers_summary.setObjectName("explorerSummaryText")
+        layers_layout.addWidget(self.layers_summary)
+
+        self.layers_container = QWidget()
+        self.layers_container_layout = QVBoxLayout(self.layers_container)
+        self.layers_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.layers_container_layout.setSpacing(6)
+        layers_layout.addWidget(self.layers_container)
+        layers_layout.addStretch(1)
+        self.page_stack.addWidget(self.layers_page)
+
+        # Bulk colours page
+        self.bulk_page = QWidget()
+        bulk_layout = QVBoxLayout(self.bulk_page)
+        bulk_layout.setContentsMargins(0, 0, 0, 0)
+        bulk_layout.setSpacing(8)
+
+        self.colour_swatches = QLabel("No colours loaded")
+        self.colour_swatches.setWordWrap(True)
+        self.colour_swatches.setObjectName("explorerSwatches")
+        bulk_layout.addWidget(self.colour_swatches)
+
+        self.bulk_summary = QLabel("Visible colour groups: 0")
+        self.bulk_summary.setObjectName("explorerSummaryText")
+        bulk_layout.addWidget(self.bulk_summary)
+
+        self.open_bulk_button = QPushButton("Open Bulk Colour Tool")
+        bulk_layout.addWidget(self.open_bulk_button)
+        bulk_layout.addStretch(1)
+        self.page_stack.addWidget(self.bulk_page)
+
+        # Points page
+        self.points_page = QWidget()
+        points_layout = QVBoxLayout(self.points_page)
+        points_layout.setContentsMargins(0, 0, 0, 0)
+        points_layout.setSpacing(8)
+
+        self.points_summary = QLabel("Points: 0\nLines: 0")
+        self.points_summary.setObjectName("explorerSummaryText")
+        self.points_summary.setWordWrap(True)
+        points_layout.addWidget(self.points_summary)
+
+        self.points_hint = QLabel("Search and bulk-edit points from the Points tool.")
+        self.points_hint.setObjectName("explorerSubtleText")
+        self.points_hint.setWordWrap(True)
+        points_layout.addWidget(self.points_hint)
+
+        self.open_points_button = QPushButton("Open Points Tool")
+        points_layout.addWidget(self.open_points_button)
+        points_layout.addStretch(1)
+        self.page_stack.addWidget(self.points_page)
+
+        # Pending page
+        self.pending_page = QWidget()
+        pending_layout = QVBoxLayout(self.pending_page)
+        pending_layout.setContentsMargins(0, 0, 0, 0)
+        pending_layout.setSpacing(8)
+
+        self.pending_summary = QLabel("Pending: 0")
+        self.pending_summary.setObjectName("explorerSummaryText")
+        pending_layout.addWidget(self.pending_summary)
+
+        self.pending_hint = QLabel("Review unsaved changes before saving.")
+        self.pending_hint.setObjectName("explorerSubtleText")
+        self.pending_hint.setWordWrap(True)
+        pending_layout.addWidget(self.pending_hint)
+
+        self.open_pending_button = QPushButton("Review Pending Changes")
+        pending_layout.addWidget(self.open_pending_button)
+        pending_layout.addStretch(1)
+        self.page_stack.addWidget(self.pending_page)
+
+        root.addWidget(self.content_widget, 1)
+
+        self.open_zones_button.clicked.connect(lambda: self.main_window.show_side_tool("Zones"))
+        self.open_bulk_button.clicked.connect(lambda: self.main_window.show_side_tool("Bulk Colours"))
+        self.open_points_button.clicked.connect(lambda: self.main_window.show_side_tool("Points"))
+        self.open_pending_button.clicked.connect(lambda: self.main_window.show_side_tool("Pending Changes"))
+        self.zone_quick_search.textChanged.connect(self.rebuild_zone_preview)
+        self.zone_preview_list.itemDoubleClicked.connect(self.open_selected_preview_zone)
+
+        self.set_page("Zones")
+
+    def clear_layout(self, layout: QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def set_page(self, page_name: str) -> None:
+        if page_name not in self.PAGE_ORDER:
+            return
+        for name, button in self.nav_buttons.items():
+            button.setChecked(name == page_name)
+        self.section_title.setText(page_name)
+        self.page_stack.setCurrentIndex(self.PAGE_ORDER.index(page_name))
+
+    def available_zone_names(self) -> list[tuple[str, str]]:
+        names = sorted(ZONE_SHORTNAME_TO_FULLNAME.items(), key=lambda item: item[1].lower())
+        if names:
+            return names
+        # Fallback sample list
+        return [
+            ("qeynos", "South Qeynos"),
+            ("qey2hh1", "North Qeynos"),
+            ("qeytoqrg", "Qeynos Hills"),
+            ("freportw", "West Freeport"),
+            ("commons", "West Commonlands"),
+            ("ecommons", "East Commonlands"),
+            ("nro", "North Ro"),
+            ("misty", "Misty Thicket"),
+        ]
+
+    def rebuild_zone_preview(self) -> None:
+        search = self.zone_quick_search.text().strip().lower()
+        self.zone_preview_list.clear()
+        count = 0
+        for shortname, fullname in self.available_zone_names():
+            label = f"{fullname} ({shortname})"
+            if search and search not in label.lower():
+                continue
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, shortname)
+            self.zone_preview_list.addItem(item)
+            count += 1
+            if count >= 20:
+                break
+        if count == 0:
+            self.zone_preview_list.addItem(QListWidgetItem("No matching zones"))
+
+    def open_selected_preview_zone(self) -> None:
+        item = self.zone_preview_list.currentItem()
+        if item is None:
+            return
+        shortname = item.data(Qt.UserRole)
+        if not shortname:
+            return
+        if hasattr(self.main_window.side_panel, "zone_search_edit"):
+            self.main_window.side_panel.zone_search_edit.setText(shortname)
+            self.main_window.rebuild_zone_list()
+            for row in range(self.main_window.side_panel.zones_list.count()):
+                zone_item = self.main_window.side_panel.zones_list.item(row)
+                if zone_item.data(Qt.UserRole) == shortname:
+                    self.main_window.side_panel.zones_list.setCurrentItem(zone_item)
+                    break
+        self.main_window.show_side_tool("Zones")
+
+    def refresh(self) -> None:
+        loaded = self.main_window.loaded_files
+        if loaded:
+            short = loaded[0].stem.split("_", 1)[0]
+            display = self.main_window.zone_display_name(short) if hasattr(self.main_window, "zone_display_name") else short
+            self.current_zone_label.setText(display)
+        else:
+            self.current_zone_label.setText("No zone loaded")
+
+        self.rebuild_zone_preview()
+
+        self.clear_layout(self.layers_container_layout)
+        if not loaded:
+            self.layers_summary.setText("No files loaded")
+            self.layers_container_layout.addWidget(QLabel("Open map files to show layer visibility."))
+        else:
+            total_points = sum(1 for p in self.main_window.loaded_map.points if not getattr(p, "deleted", False))
+            total_lines = sum(1 for l in self.main_window.loaded_map.lines if not getattr(l, "deleted", False))
+            self.layers_summary.setText(f"{len(loaded)} loaded file(s)\n{total_points} point(s), {total_lines} line(s)")
+            for file_path in loaded:
+                row = QCheckBox(file_path.name)
+                row.setChecked(self.main_window.layer_visible.get(file_path, True))
+                row.toggled.connect(lambda checked, fp=file_path: self.main_window.set_layer_visible(fp, checked))
+                self.layers_container_layout.addWidget(row)
+        self.layers_container_layout.addStretch(1)
+
+        point_count = sum(1 for p in self.main_window.loaded_map.points if not getattr(p, "deleted", False))
+        line_count = sum(1 for l in self.main_window.loaded_map.lines if not getattr(l, "deleted", False))
+        self.points_summary.setText(f"Points: {point_count:,}\nLines: {line_count:,}")
+
+        dirty_count = len(self.main_window.dirty_records()) if hasattr(self.main_window, "dirty_records") else 0
+        self.pending_summary.setText(f"Pending: {dirty_count:,}")
+
+        colours = {}
+        for point in self.main_window.loaded_map.points:
+            if getattr(point, "deleted", False):
+                continue
+            rgb = (point.r, point.g, point.b)
+            colours[rgb] = colours.get(rgb, 0) + 1
+        for line in self.main_window.loaded_map.lines:
+            if getattr(line, "deleted", False):
+                continue
+            rgb = (line.r, line.g, line.b)
+            colours[rgb] = colours.get(rgb, 0) + 1
+
+        if colours:
+            top_colours = sorted(colours.items(), key=lambda item: item[1], reverse=True)[:12]
+            swatches = " ".join(
+                f'<span style="background-color: rgb({r},{g},{b}); color: rgb({r},{g},{b}); border: 1px solid #777;">■■</span>'
+                for (r, g, b), _count in top_colours
+            )
+            self.colour_swatches.setText(swatches)
+            self.bulk_summary.setText(f"Visible colour groups: {len(colours):,}")
+        else:
+            self.colour_swatches.setText("No colours loaded")
+            self.bulk_summary.setText("Visible colour groups: 0")
+
+
 class EqMapMainWindow(QMainWindow):
     def __init__(self, initial_files: Optional[list[Path]] = None) -> None:
         super().__init__()
         self.setWindowTitle(f"EQ Map Editor {VERSION}")
+        icon = app_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
         self.mapper = CoordinateMapper(flip_display_y=False)
 
         self.scene = QGraphicsScene(self)
@@ -1602,6 +2876,7 @@ class EqMapMainWindow(QMainWindow):
         self.view.setScene(self.scene)
 
         self.loaded_files: list[Path] = []
+        self.loaded_file_mtimes: dict[Path, float] = {}
         self.loaded_map = LoadedMap(lines=[], points=[])
         self.layer_visible: dict[Path, bool] = {}
 
@@ -1622,7 +2897,8 @@ class EqMapMainWindow(QMainWindow):
         self.remember_last_loaded_map = True
         self.auto_fit_restored_map = True
         self.autosave_settings_on_exit = True
-        self.show_beta_warning = True
+        self.show_beta_warning = False
+        self.welcome_seen = False
         self.default_background_mode = "remember"
         self.max_highlights_before_warning = 5000
         self.confirm_bulk_edit_over = 1
@@ -1646,23 +2922,34 @@ class EqMapMainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("Main Toolbar", self)
+        toolbar.setObjectName("topToolbar")
         toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setIconSize(QSize(16, 16))
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        toolbar.setFixedHeight(64)
         self.addToolBar(toolbar)
+        self.top_toolbar = toolbar
 
         file_menu = QMenu("File", self)
         file_menu.setMinimumWidth(190)
 
         file_button = QToolButton(self)
-        file_button.setText("File")
+        file_button.setObjectName("fileMenuButton")
+        file_button.setText("☰  File")
         file_button.setMenu(file_menu)
         file_button.setPopupMode(QToolButton.InstantPopup)
+        file_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         toolbar.addWidget(file_button)
+        self.file_button = file_button
 
         open_action = QAction("Open Map File(s)", self)
+        open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_files_dialog)
         file_menu.addAction(open_action)
 
         save_action = QAction("Save Edits", self)
+        save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self.save_edits)
         file_menu.addAction(save_action)
 
@@ -1694,6 +2981,22 @@ class EqMapMainWindow(QMainWindow):
         help_action.triggered.connect(self.show_controls)
         file_menu.addAction(help_action)
 
+        keyboard_action = QAction("Keyboard Shortcuts", self)
+        keyboard_action.triggered.connect(self.show_keyboard_shortcuts)
+        file_menu.addAction(keyboard_action)
+
+        quick_start_action = QAction("Quick Start", self)
+        quick_start_action.triggered.connect(self.show_quick_start)
+        file_menu.addAction(quick_start_action)
+
+        open_logs_action = QAction("Open Logs Folder", self)
+        open_logs_action.triggered.connect(self.open_logs_folder)
+        file_menu.addAction(open_logs_action)
+
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self.show_about)
+        file_menu.addAction(about_action)
+
         file_menu.addSeparator()
 
         exit_action = QAction("Exit", self)
@@ -1703,14 +3006,18 @@ class EqMapMainWindow(QMainWindow):
         toolbar.addSeparator()
 
         fit_action = QAction("Fit Map", self)
+        self.fit_action = fit_action
+        fit_action.setShortcut("Ctrl+F")
         fit_action.triggered.connect(self.fit_map)
         toolbar.addAction(fit_action)
 
         fit_selected_action = QAction("Fit Selected", self)
+        self.fit_selected_action = fit_selected_action
         fit_selected_action.triggered.connect(self.fit_selected)
         toolbar.addAction(fit_selected_action)
 
         clear_selection_action = QAction("Clear Selection", self)
+        self.clear_selection_action = clear_selection_action
         clear_selection_action.triggered.connect(self.clear_selection_and_highlights)
         toolbar.addAction(clear_selection_action)
 
@@ -1743,26 +3050,34 @@ class EqMapMainWindow(QMainWindow):
         toolbar.addAction(self.dark_bg_action)
 
         toggle_sidebar_action = QAction("Toggle Sidebar", self)
+        self.toggle_sidebar_action = toggle_sidebar_action
         toggle_sidebar_action.triggered.connect(self.toggle_sidebar)
         toolbar.addAction(toggle_sidebar_action)
 
         toolbar.addSeparator()
-        toolbar.addWidget(QLabel("Search Labels:"))
+        self.search_label = QLabel("Search Labels")
+        self.search_label.setObjectName("toolbarSearchLabel")
+        toolbar.addWidget(self.search_label)
         self.global_search_edit = QLineEdit()
+        self.global_search_edit.setObjectName("toolbarSearchEdit")
         self.global_search_edit.setPlaceholderText("Point label text...")
-        self.global_search_edit.setMaximumWidth(220)
+        self.global_search_edit.setFixedWidth(220)
+        self.global_search_edit.setFixedHeight(38)
         self.global_search_edit.returnPressed.connect(self.search_select_first_label_match)
         toolbar.addWidget(self.global_search_edit)
 
         search_first_action = QAction("Find First", self)
+        self.search_first_action = search_first_action
         search_first_action.triggered.connect(self.search_select_first_label_match)
         toolbar.addAction(search_first_action)
 
         search_all_action = QAction("Select Matches", self)
+        self.search_all_action = search_all_action
         search_all_action.triggered.connect(self.search_select_all_label_matches)
         toolbar.addAction(search_all_action)
 
         center_selected_action = QAction("Center Selected", self)
+        self.center_selected_action = center_selected_action
         center_selected_action.triggered.connect(self.center_selected)
         toolbar.addAction(center_selected_action)
 
@@ -1778,12 +3093,27 @@ class EqMapMainWindow(QMainWindow):
             self.global_search_edit,
         )
 
+        self.canvas_container = MapCanvasContainer(self)
+        canvas_layout = QVBoxLayout(self.canvas_container)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.setSpacing(0)
+        canvas_layout.addWidget(self.view)
+
+        self.canvas_controls = CanvasControlsOverlay(self)
+        self.canvas_controls.setParent(self.canvas_container)
+        self.minimap_overlay = MiniMapOverlay(self)
+        self.minimap_overlay.setParent(self.canvas_container)
+
         self.splitter = QSplitter(Qt.Horizontal, self)
-        self.splitter.addWidget(self.view)
+        self.splitter.addWidget(self.canvas_container)
         self.splitter.addWidget(self.side_panel)
         self.splitter.setStretchFactor(0, 5)
         self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([1260, 440])
         self.setCentralWidget(self.splitter)
+
+        self.view.horizontalScrollBar().valueChanged.connect(self.update_canvas_overlays)
+        self.view.verticalScrollBar().valueChanged.connect(self.update_canvas_overlays)
 
         self.status_label = QLabel("Open one or more EQ map text files.")
         self.dirty_label = QLabel("Clean")
@@ -1792,7 +3122,7 @@ class EqMapMainWindow(QMainWindow):
         status.addPermanentWidget(self.dirty_label)
         self.setStatusBar(status)
 
-        self.set_background("light")
+        self.set_background("dark")
 
     def edit_mode(self) -> str:
         return self.side_panel.edit_mode()
@@ -1819,91 +3149,356 @@ class EqMapMainWindow(QMainWindow):
 
     def set_background(self, mode: str) -> None:
         self.dark_ui = mode == "dark"
-        color = QColor(18, 18, 18) if self.dark_ui else QColor(255, 255, 255)
-        self.view.setBackgroundBrush(QBrush(color))
-        self.scene.setBackgroundBrush(QBrush(color))
+        canvas_color = QColor(18, 18, 18) if self.dark_ui else QColor(245, 246, 248)
+        self.view.setBackgroundBrush(QBrush(canvas_color))
+        self.scene.setBackgroundBrush(QBrush(canvas_color))
         if hasattr(self, "light_bg_action"):
             self.light_bg_action.setChecked(mode == "light")
         if hasattr(self, "dark_bg_action"):
             self.dark_bg_action.setChecked(mode == "dark")
 
+        up_arrow, down_arrow = ensure_spinbox_arrow_images()
+
         if self.dark_ui:
-            up_arrow, down_arrow = ensure_spinbox_arrow_images()
-            self.setStyleSheet(f"""
-                QWidget {{ background-color: #242424; color: #f0f0f0; }}
-                QGroupBox {{ border: 1px solid #555; margin-top: 8px; padding-top: 8px; }}
-                QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 3px; }}
-                QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget {{
-                    background-color: #1b1b1b;
-                    color: #f0f0f0;
-                    border: 1px solid #555;
-                }}
-                QSpinBox, QDoubleSpinBox {{
-                    padding-right: 22px;
-                    min-height: 22px;
-                }}
-                QSpinBox::up-button, QDoubleSpinBox::up-button {{
-                    subcontrol-origin: border;
-                    subcontrol-position: top right;
-                    width: 20px;
-                    border-left: 1px solid #777;
-                    border-bottom: 1px solid #555;
-                    background-color: #3a3a3a;
-                }}
-                QSpinBox::down-button, QDoubleSpinBox::down-button {{
-                    subcontrol-origin: border;
-                    subcontrol-position: bottom right;
-                    width: 20px;
-                    border-left: 1px solid #777;
-                    border-top: 1px solid #555;
-                    background-color: #3a3a3a;
-                }}
-                QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-                QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
-                    background-color: #505050;
-                }}
-                QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-                    image: url("{up_arrow}");
-                    width: 9px;
-                    height: 9px;
-                }}
-                QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-                    image: url("{down_arrow}");
-                    width: 9px;
-                    height: 9px;
-                }}
-                QPushButton {{ background-color: #333; color: #f0f0f0; border: 1px solid #666; padding: 3px; }}
-                QPushButton:hover {{ background-color: #444; }}
-                QTabWidget::pane {{ border: 1px solid #555; }}
-                QTabBar::tab {{ background: #333; color: #f0f0f0; padding: 4px; }}
-                QTabBar::tab:selected {{ background: #555; }}
-                QToolButton {{
-                    background-color: #242424;
-                    color: #f0f0f0;
-                    border: 0px;
-                    padding: 4px 10px;
-                }}
-                QToolButton:hover {{
-                    background-color: #444;
-                }}
-                QToolButton:checked {{
-                    background-color: #4f6fa8;
-                    color: #ffffff;
-                    border: 1px solid #9db8ff;
-                    font-weight: bold;
-                }}
-                QMenuBar {{ background-color: #242424; color: #f0f0f0; }}
-                QMenuBar::item:selected {{ background-color: #444; }}
-                QMenu {{ background-color: #242424; color: #f0f0f0; border: 1px solid #555; }}
-                QMenu::item {{ padding: 5px 28px 5px 18px; }}
-                QMenu::item:selected {{ background-color: #4f6fa8; }}
-            """)
+            window_bg = "#242424"
+            panel_bg = "#282828"
+            field_bg = "#1b1b1b"
+            text_color = "#f0f0f0"
+            border = "#555"
+            strong_border = "#6f6f6f"
+            button_bg = "#1f1f1f"
+            button_hover = "#2b2b2b"
+            button_checked = "#3f5f91"
+            toolbar_bg = "#1d1f22"
+            toolbar_border = "#36393d"
+            toolbar_button = "#1f1f21"
+            toolbar_button_hover = "#2d3036"
+            toolbar_button_checked = "#3b5c91"
+            toolbar_text = "#f0f0f0"
+            search_bg = "#17181b"
         else:
-            self.setStyleSheet("")
+            window_bg = "#f4f5f7"
+            panel_bg = "#fbfbfc"
+            field_bg = "#ffffff"
+            text_color = "#1b1d20"
+            border = "#c8ccd2"
+            strong_border = "#b8bec8"
+            button_bg = "#ffffff"
+            button_hover = "#eef2f8"
+            button_checked = "#dbe7fb"
+            toolbar_bg = "#eef1f5"
+            toolbar_border = "#c8ced8"
+            toolbar_button = "#ffffff"
+            toolbar_button_hover = "#f3f6fb"
+            toolbar_button_checked = "#dbe7fb"
+            toolbar_text = "#1f2630"
+            search_bg = "#ffffff"
+
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {window_bg};
+                color: {text_color};
+            }}
+            QGroupBox {{
+                border: 1px solid {border};
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 10px;
+                background-color: {panel_bg};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: {text_color};
+                font-weight: bold;
+            }}
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget {{
+                background-color: {field_bg};
+                color: {text_color};
+                border: 1px solid {border};
+                border-radius: 4px;
+            }}
+            QSpinBox, QDoubleSpinBox {{
+                padding-right: 22px;
+                min-height: 22px;
+            }}
+            QSpinBox::up-button, QDoubleSpinBox::up-button {{
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left: 1px solid {strong_border};
+                border-bottom: 1px solid {border};
+                background-color: {button_bg};
+            }}
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+                width: 20px;
+                border-left: 1px solid {strong_border};
+                border-top: 1px solid {border};
+                background-color: {button_bg};
+            }}
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+                background-color: {button_hover};
+            }}
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+                image: url("{up_arrow}");
+                width: 9px;
+                height: 9px;
+            }}
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+                image: url("{down_arrow}");
+                width: 9px;
+                height: 9px;
+            }}
+            QPushButton {{
+                background-color: {button_bg};
+                color: {text_color};
+                border: 1px solid {border};
+                border-radius: 4px;
+                padding: 4px 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {button_hover};
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {border};
+                background-color: {panel_bg};
+            }}
+            QTabBar::tab {{
+                background: {button_bg};
+                color: {text_color};
+                padding: 7px 10px;
+                border: 1px solid {border};
+                border-bottom: none;
+                border-top-left-radius: 5px;
+                border-top-right-radius: 5px;
+                margin-right: 2px;
+            }}
+            QTabBar::tab:selected {{
+                background: {button_checked};
+                font-weight: bold;
+            }}
+            QMenu {{
+                background-color: {panel_bg};
+                color: {text_color};
+                border: 1px solid {border};
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 6px 24px 6px 14px;
+                border-radius: 4px;
+            }}
+            QMenu::item:selected {{
+                background-color: {button_checked};
+            }}
+            QToolBar#topToolbar {{
+                background-color: {toolbar_bg};
+                border: none;
+                border-bottom: 1px solid {toolbar_border};
+                spacing: 6px;
+                padding: 8px 8px;
+            }}
+            QToolBar#topToolbar::separator {{
+                background: {toolbar_border};
+                width: 1px;
+                margin: 5px 6px;
+            }}
+            QToolButton, QToolBar#topToolbar QToolButton, QToolButton#fileMenuButton {{
+                background-color: {toolbar_button};
+                color: {toolbar_text};
+                border: 1px solid {toolbar_border};
+                border-radius: 6px;
+                padding: 6px 12px;
+                margin: 2px 2px;
+                min-height: 36px;
+            }}
+            QToolButton:hover, QToolBar#topToolbar QToolButton:hover, QToolButton#fileMenuButton:hover {{
+                background-color: {toolbar_button_hover};
+            }}
+            QToolButton:checked, QToolBar#topToolbar QToolButton:checked {{
+                background-color: {toolbar_button_checked};
+                border: 1px solid #7ba1e6;
+                font-weight: bold;
+            }}
+            QToolButton::menu-indicator {{
+                subcontrol-origin: padding;
+                subcontrol-position: right center;
+                width: 10px;
+            }}
+            QLabel#toolbarSearchLabel {{
+                background: transparent;
+                border: none;
+                margin-left: 6px;
+                margin-right: 2px;
+                padding-top: 1px;
+                font-weight: 600;
+                color: {toolbar_text};
+            }}
+            QLineEdit#toolbarSearchEdit {{
+                background-color: {search_bg};
+                color: {toolbar_text};
+                border: 1px solid {toolbar_border};
+                border-radius: 6px;
+                padding: 0px 10px;
+                min-height: 38px;
+                max-height: 38px;
+            }}
+            QWidget#explorerRail {{
+                background-color: {panel_bg};
+                border-right: 1px solid {border};
+            }}
+            QLabel#explorerRailTitle {{
+                color: {text_color};
+                font-weight: bold;
+                font-size: 13px;
+                padding: 4px 2px 8px 2px;
+            }}
+            QWidget#explorerContent {{
+                background-color: {window_bg};
+            }}
+            QLabel#explorerSectionTitle {{
+                font-size: 15px;
+                font-weight: bold;
+                color: {text_color};
+                padding-left: 2px;
+            }}
+            QToolButton#explorerNavButton {{
+                background-color: transparent;
+                color: {text_color};
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 8px 4px;
+                min-height: 58px;
+                text-align: center;
+            }}
+            QToolButton#explorerNavButton:hover {{
+                background-color: {button_hover};
+                border: 1px solid {border};
+            }}
+            QToolButton#explorerNavButton:checked {{
+                background-color: {button_checked};
+                border: 1px solid #7ba1e6;
+                font-weight: bold;
+            }}
+            QLabel#explorerSubtleText {{
+                color: #9aa2ae;
+                font-size: 11px;
+            }}
+            QLabel#explorerSummaryText {{
+                color: {text_color};
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QLabel#explorerSwatches {{
+                padding: 6px 0;
+            }}
+            QWidget#canvasControlsOverlay {{
+                background-color: rgba(35, 38, 43, 0.94);
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+            QToolButton#canvasControlButton {{
+                background-color: {button_bg};
+                color: {text_color};
+                border: 1px solid {border};
+                border-radius: 5px;
+                padding: 0px;
+                margin: 0px;
+                min-width: 42px;
+                max-width: 42px;
+                min-height: 38px;
+                max-height: 38px;
+            }}
+            QToolButton#canvasControlButton:hover {{
+                background-color: {button_hover};
+            }}
+            QLabel#canvasOverlayText {{
+                background-color: transparent;
+                color: {text_color};
+                font-weight: 600;
+            }}
+            QWidget#miniMapOverlay {{
+                background-color: rgba(35, 38, 43, 0.90);
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+            QLabel#inspectorHeaderLabel {{
+                font-size: 16px;
+                font-weight: bold;
+                color: {text_color};
+            }}
+            QToolButton#inspectorUtilityButton {{
+                background-color: transparent;
+                color: {text_color};
+                border: 1px solid {border};
+                border-radius: 4px;
+                min-width: 24px;
+                min-height: 24px;
+                padding: 2px;
+            }}
+            QToolButton#inspectorUtilityButton:hover {{
+                background-color: {button_hover};
+            }}
+            QLabel#inspectorSummaryTitle {{
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QLabel#inspectorSummaryMeta {{
+                color: #9aa2ae;
+            }}
+            QLabel#inspectorMultiSummary, QLabel#inspectorFooterSummary {{
+                color: {text_color};
+                font-size: 11px;
+            }}
+            QLabel#inspectorHelperText {{
+                color: #9aa2ae;
+                font-size: 10px;
+                line-height: 1.3em;
+            }}
+            QLabel#compactFieldLabel {{
+                font-size: 11px;
+                color: {text_color};
+            }}
+            QLabel#colourPreviewSwatch {{
+                border: 1px solid {strong_border};
+                border-radius: 4px;
+                background-color: {field_bg};
+            }}
+            QPushButton#primaryButton {{
+                background-color: #2f63d8;
+                color: #ffffff;
+                border: 1px solid #4173e3;
+                border-radius: 6px;
+                font-weight: bold;
+                min-height: 34px;
+            }}
+            QPushButton#primaryButton:hover {{
+                background-color: #3d71e6;
+            }}
+            QPushButton#dangerButton {{
+                background-color: transparent;
+                color: #ff8c8c;
+                border: 1px solid #9b4a4a;
+                border-radius: 6px;
+                min-height: 34px;
+                padding: 4px 10px;
+            }}
+            QPushButton#dangerButton:hover {{
+                background-color: rgba(160, 70, 70, 0.15);
+            }}
+        """)
 
         if hasattr(self, "side_panel"):
             self.side_panel.rebuild_colour_list()
             self.side_panel.rebuild_points_list()
+            try:
+                self.side_panel.rebuild_pending_changes()
+            except Exception:
+                pass
+
 
     def log_event(self, message: str) -> None:
         try:
@@ -1955,6 +3550,7 @@ class EqMapMainWindow(QMainWindow):
             "auto_fit_restored_map": bool(self.auto_fit_restored_map),
             "autosave_settings_on_exit": bool(self.autosave_settings_on_exit),
             "show_beta_warning": bool(self.show_beta_warning),
+            "welcome_seen": bool(getattr(self, "welcome_seen", False)),
             "default_background_mode": self.default_background_mode,
             "flip_display_y": bool(self.mapper.flip_display_y),
             "max_highlights_before_warning": int(self.max_highlights_before_warning),
@@ -1989,6 +3585,7 @@ class EqMapMainWindow(QMainWindow):
             self.auto_fit_restored_map = data.get("auto_fit_restored_map", True)
             self.autosave_settings_on_exit = data.get("autosave_settings_on_exit", True)
             self.show_beta_warning = data.get("show_beta_warning", True)
+            self.welcome_seen = data.get("welcome_seen", False)
             self.default_background_mode = data.get("default_background_mode", "remember")
             self.max_highlights_before_warning = int(data.get("max_highlights_before_warning", 5000))
             self.confirm_bulk_edit_over = int(data.get("confirm_bulk_edit_over", 1))
@@ -2000,13 +3597,13 @@ class EqMapMainWindow(QMainWindow):
             self.apply_preferences_to_panel()
 
             if self.default_background_mode == "light":
-                self.set_background("light")
+                self.set_background("dark")
             elif self.default_background_mode == "dark":
                 self.set_background("dark")
             elif data.get("dark_mode"):
                 self.set_background("dark")
             else:
-                self.set_background("light")
+                self.set_background("dark")
 
             self.map_folder = data.get("map_folder", "")
             if self.map_folder and hasattr(self, "side_panel"):
@@ -2060,6 +3657,93 @@ class EqMapMainWindow(QMainWindow):
             self.show_beta_warning = False
             self.save_settings()
 
+
+    def open_logs_folder(self) -> None:
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(LOGS_DIR))
+        except Exception as exc:
+            QMessageBox.warning(self, "Logs Folder", f"Could not open logs folder:\n{exc}")
+
+    def show_quick_start(self) -> None:
+        QMessageBox.information(
+            self,
+            "EQ Map Editor Quick Start",
+            (
+                "Suggested beta workflow:\n\n"
+                "1. Work from a copied map folder while testing.\n"
+                "2. Use File > Open Map File(s) to load one zone's map files.\n"
+                "3. Use Fit Map / Fit Selected and the mini-map to navigate.\n"
+                "4. Select points or lines, then edit them in the Inspector.\n"
+                "5. Use Bulk Colours > Palette Conversion to switch light/dark map palettes.\n"
+                "6. Use Save As... for a safe test export, or Save Edits when ready.\n"
+                "7. Backups are written to the local backups folder before source files are changed."
+            ),
+        )
+
+    def show_keyboard_shortcuts(self) -> None:
+        QMessageBox.information(
+            self,
+            "Keyboard Shortcuts",
+            (
+                "Keyboard shortcuts:\n\n"
+                "Ctrl+O  Open map file(s)\n"
+                "Ctrl+S  Save edits\n"
+                "Ctrl+Z  Undo\n"
+                "Ctrl+Y  Redo\n"
+                "Esc     Clear selection\n"
+                "Delete  Delete selected records\n"
+                "Ctrl+H  Hide selected layer/records where supported\n\n"
+                "Mouse:\n"
+                "Wheel   Zoom\n"
+                "Right or middle drag   Pan\n"
+                "Double-left-click      Add point/line based on edit mode"
+            ),
+        )
+
+    def show_about(self) -> None:
+        QMessageBox.information(
+            self,
+            "About EQ Map Editor",
+            (
+                f"EQ Map Editor {VERSION}\n\n"
+                "A desktop editor for EverQuest map .txt files.\n\n"
+                "Local support folders:\n"
+                f"- Settings: {SETTINGS_DIR}\n"
+                f"- Backups: {BACKUPS_DIR}\n"
+                f"- Logs: {LOGS_DIR}\n"
+                f"- Palettes: {PALETTES_DIR}"
+            ),
+        )
+
+    def maybe_show_welcome(self) -> None:
+        if getattr(self, "welcome_seen", False):
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Welcome to EQ Map Editor")
+        layout = QVBoxLayout(dialog)
+        text = QLabel(
+            "Welcome to EQ Map Editor.\n\n"
+            "Quick start:\n"
+            "1. Open one or more EQ map .txt files.\n"
+            "2. Use the map canvas to inspect, pan, zoom, and select records.\n"
+            "3. Edit selected points/lines in the Inspector.\n"
+            "4. Use Bulk Colours > Palette Conversion to switch light/dark palettes.\n"
+            "5. Use Save As... first while testing, or Save Edits when you are ready.\n\n"
+            "Tip: beta testers should work from a copied map folder."
+        )
+        text.setWordWrap(True)
+        layout.addWidget(text)
+        checkbox = QCheckBox("Do not show this again")
+        layout.addWidget(checkbox)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+        if checkbox.isChecked():
+            self.welcome_seen = True
+            self.save_settings()
+
     def open_files_dialog(self) -> None:
         if not self.confirm_discard_unsaved():
             return
@@ -2080,6 +3764,7 @@ class EqMapMainWindow(QMainWindow):
             return
 
         self.loaded_files = [Path(path) for path in file_paths]
+        self.loaded_file_mtimes = {path: path.stat().st_mtime for path in self.loaded_files if path.exists()}
         self.layer_visible = {path: True for path in self.loaded_files}
         self.loaded_map = loaded_map
         self.undo_stack.clear()
@@ -2096,6 +3781,28 @@ class EqMapMainWindow(QMainWindow):
             f"Loaded {len(loaded_map.lines):,} lines and {len(loaded_map.points):,} points from {file_list}"
         )
         self.log_event(f"Loaded files: {file_list}")
+        if hasattr(self, "nav_panel"):
+            self.nav_panel.refresh()
+
+
+    def update_scene_pan_padding(self) -> None:
+        rect = self.scene.itemsBoundingRect()
+        if rect.isNull():
+            return
+
+        # Use at least one viewport-width/height of padding in scene units.
+        # This makes the left/right/top/bottom map edges reachable near the center of the view.
+        viewport_rect = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
+        pad_x = max(rect.width() * 0.25, viewport_rect.width() * 0.55, 250.0)
+        pad_y = max(rect.height() * 0.25, viewport_rect.height() * 0.55, 250.0)
+
+        padded = QRectF(
+            rect.x() - pad_x,
+            rect.y() - pad_y,
+            rect.width() + pad_x * 2,
+            rect.height() + pad_y * 2,
+        )
+        self.scene.setSceneRect(padded)
 
     def render_map(self, keep_view: bool = False) -> None:
         old_transform = self.view.transform()
@@ -2120,12 +3827,15 @@ class EqMapMainWindow(QMainWindow):
 
         self.scene.selectionChanged.connect(self.on_selection_changed)
         self.on_edit_mode_changed(self.edit_mode())
+        self.update_scene_pan_padding()
 
         if keep_view:
             self.view.setTransform(old_transform)
             self.view.centerOn(old_center)
         else:
             self.fit_map()
+        self.update_scene_pan_padding()
+        self.update_canvas_overlays()
 
     def line_tooltip(self, record: MapLineRecord) -> str:
         return f"{record.file_path.name}:{record.line_index + 1 if record.line_index >= 0 else 'new'}\n{record.to_map_line()}"
@@ -2462,6 +4172,8 @@ class EqMapMainWindow(QMainWindow):
             rect.height() + margin * 2,
         )
         self.view.fitInView(padded, Qt.KeepAspectRatio)
+        self.update_scene_pan_padding()
+        self.update_canvas_overlays()
 
     def toggle_labels(self, checked: bool) -> None:
         self.show_labels = checked
@@ -2482,9 +4194,13 @@ class EqMapMainWindow(QMainWindow):
         self.layer_visible[file_path] = visible
         self.render_map(keep_view=True)
         self.side_panel.rebuild_layers()
+        if hasattr(self, "nav_panel"):
+            self.nav_panel.refresh()
         self.status_label.setText(f"{file_path.name} visible: {visible}")
 
     def on_edit_mode_changed(self, mode: str) -> None:
+        if hasattr(self, "canvas_controls"):
+            self.canvas_controls.set_active_mode(mode)
         for item in self.point_items_by_record.values():
             item.setFlag(QGraphicsItem.ItemIsMovable, mode == "Move Points")
         for item in self.line_items_by_record.values():
@@ -2898,6 +4614,119 @@ class EqMapMainWindow(QMainWindow):
         highlighted = self.add_highlights_for_records(records)
         self.status_label.setText(f"Prepared and highlighted {highlighted} {record_type} matching {len(colours)} colour(s).")
 
+
+
+    def apply_palette_mapping_preview(self) -> None:
+        mappings = self.side_panel.current_palette_mapping()
+        if not mappings:
+            self.status_label.setText("No palette mappings to apply.")
+            return
+
+        mapping_lookup = {(row["scope"], tuple(row["rgb"])): tuple(row["target_rgb"]) for row in mappings}
+
+        changes: list[tuple[Any, tuple[int, int, int]]] = []
+        for point in self.loaded_map.points:
+            if getattr(point, "deleted", False) or not self.layer_visible.get(point.file_path, True):
+                continue
+            key = ("Points", (point.r, point.g, point.b))
+            if key in mapping_lookup and mapping_lookup[key] != key[1]:
+                changes.append((point, mapping_lookup[key]))
+
+        for line in self.loaded_map.lines:
+            if getattr(line, "deleted", False) or not self.layer_visible.get(line.file_path, True):
+                continue
+            key = ("Lines", (line.r, line.g, line.b))
+            if key in mapping_lookup and mapping_lookup[key] != key[1]:
+                changes.append((line, mapping_lookup[key]))
+
+        if not changes:
+            self.status_label.setText("No visible records would change from the current mapping.")
+            return
+
+        point_count = sum(1 for record, _rgb in changes if isinstance(record, MapPointRecord))
+        line_count = sum(1 for record, _rgb in changes if isinstance(record, MapLineRecord))
+        target = self.side_panel.palette_target_combo.currentText()
+        palette = self.side_panel.selected_palette() or {}
+
+        if not self.confirm_bulk_action(
+            "Apply Palette Mapping",
+            f"Apply palette mapping to {len(changes)} visible record(s)?\\n\\n"
+            f"Palette: {palette.get('name', 'Palette')}\\nTarget: {target}\\n"
+            f"Points: {point_count}\\nLines: {line_count}\\n\\n"
+            "Only mapped point/line colour groups will be changed. Groups set to Skip will be ignored.",
+            len(changes),
+            action_type="edit",
+        ):
+            return
+
+        affected = [record for record, _rgb in changes]
+        before = [snapshot_point(r) if isinstance(r, MapPointRecord) else snapshot_line(r) for r in affected]
+        for record, new_rgb in changes:
+            record.r, record.g, record.b = new_rgb
+            record.dirty = True
+        after = [snapshot_point(r) if isinstance(r, MapPointRecord) else snapshot_line(r) for r in affected]
+
+        self.undo_stack.append(BulkEditCommand(f"Apply {target} palette mapping", affected, before, after))
+        self.redo_stack.clear()
+        self.render_map(keep_view=True)
+        self.update_dirty_indicator()
+        self.status_label.setText(f"Applied palette mapping to {len(changes)} visible record(s).")
+
+    def apply_palette_to_visible_records(self) -> None:
+        palette = self.side_panel.selected_palette()
+        if not palette:
+            self.status_label.setText("No palette selected.")
+            return
+
+        target_mode = self.side_panel.palette_target_combo.currentText()
+        records: list[Any] = []
+        for record in list(self.loaded_map.lines) + list(self.loaded_map.points):
+            if getattr(record, "deleted", False):
+                continue
+            if not self.layer_visible.get(record.file_path, True):
+                continue
+            records.append(record)
+
+        if not records:
+            self.status_label.setText("No visible records to recolour.")
+            return
+
+        changes: list[tuple[Any, tuple[int, int, int]]] = []
+        for record in records:
+            current_rgb = (record.r, record.g, record.b)
+            new_rgb = map_rgb_to_palette(current_rgb, palette, target_mode)
+            if new_rgb != current_rgb:
+                changes.append((record, new_rgb))
+
+        if not changes:
+            self.status_label.setText(f"Visible records already match the {target_mode.lower()} palette.")
+            return
+
+        point_count = sum(1 for record, _rgb in changes if isinstance(record, MapPointRecord))
+        line_count = sum(1 for record, _rgb in changes if isinstance(record, MapLineRecord))
+        if not self.confirm_bulk_action(
+            "Apply Colour Palette",
+            f"Apply palette '{palette.get('name', 'Palette')}' to {len(changes)} visible record(s)?\n\n"
+            f"Target: {target_mode}\nPoints: {point_count}\nLines: {line_count}\n\n"
+            "This maps each current colour to the nearest palette entry and applies that entry's light/dark version.",
+            len(changes),
+            action_type="edit",
+        ):
+            return
+
+        affected = [record for record, _rgb in changes]
+        before = [snapshot_point(r) if isinstance(r, MapPointRecord) else snapshot_line(r) for r in affected]
+        for record, new_rgb in changes:
+            record.r, record.g, record.b = new_rgb
+            record.dirty = True
+        after = [snapshot_point(r) if isinstance(r, MapPointRecord) else snapshot_line(r) for r in affected]
+
+        self.undo_stack.append(BulkEditCommand(f"Apply {target_mode} palette", affected, before, after))
+        self.redo_stack.clear()
+        self.render_map(keep_view=True)
+        self.update_dirty_indicator()
+        self.status_label.setText(f"Applied {target_mode.lower()} palette to {len(changes)} visible record(s).")
+
     def apply_bulk_colour_to_selected_matching(self) -> None:
         colours = set(self.selected_colours_from_bulk_tab(self.current_bulk_colour_type))
         if not colours:
@@ -3176,6 +5005,60 @@ class EqMapMainWindow(QMainWindow):
         self.load_files(files)
         self.status_label.setText(f"Opened {self.zone_display_name(shortname)}.")
 
+
+
+    def set_edit_mode_from_overlay(self, mode_name: str) -> None:
+        if hasattr(self.side_panel, "edit_mode_combo"):
+            self.side_panel.edit_mode_combo.setCurrentText(mode_name)
+        if hasattr(self, "canvas_controls"):
+            self.canvas_controls.set_active_mode(mode_name)
+
+    def zoom_in(self) -> None:
+        self.view.scale(1.2, 1.2)
+        self.update_canvas_overlays()
+
+    def zoom_out(self) -> None:
+        self.view.scale(1 / 1.2, 1 / 1.2)
+        self.update_canvas_overlays()
+
+    def update_canvas_cursor_position(self, scene_point: QPointF) -> None:
+        x, y = self.mapper.scene_to_map(scene_point)
+        self.canvas_cursor_text = f"X: {x:.2f}   Y: {y:.2f}   Z: 0.00"
+        self.update_canvas_overlays()
+
+    def update_canvas_overlays(self) -> None:
+        if not hasattr(self, "canvas_container"):
+            return
+        container_rect = self.canvas_container.rect()
+        if container_rect.width() <= 0 or container_rect.height() <= 0:
+            return
+
+        if hasattr(self, "canvas_controls"):
+            self.canvas_controls.setGeometry(14, container_rect.height() - 82, min(1120, max(840, container_rect.width() - 210)), 66)
+            zoom = int(round(self.view.transform().m11() * 100))
+            cursor_text = getattr(self, "canvas_cursor_text", "X: 0.00   Y: 0.00   Z: 0.00")
+            self.canvas_controls.update_status(cursor_text, f"Zoom: {zoom}%")
+            self.canvas_controls.raise_()
+
+        if hasattr(self, "minimap_overlay"):
+            width, height = 160, 132
+            self.minimap_overlay.setGeometry(container_rect.width() - width - 18, container_rect.height() - height - 18, width, height)
+            self.minimap_overlay.update()
+            self.minimap_overlay.raise_()
+
+    def show_side_tool(self, tab_name: str) -> None:
+        if not hasattr(self.side_panel, "tabs"):
+            return
+        for index in range(self.side_panel.tabs.count()):
+            if self.side_panel.tabs.tabText(index) == tab_name:
+                self.side_panel.tabs.setCurrentIndex(index)
+                sizes = self.splitter.sizes() if hasattr(self, "splitter") else []
+                if len(sizes) >= 2 and sizes[1] < 120:
+                    total = max(sum(sizes), 1)
+                    self.splitter.setSizes([max(total - 440, 300), 440])
+                self.status_label.setText(f"Opened {tab_name} tool.")
+                return
+
     def toggle_sidebar(self) -> None:
         if not hasattr(self, "splitter"):
             return
@@ -3184,9 +5067,10 @@ class EqMapMainWindow(QMainWindow):
             return
         total = max(sum(sizes), 1)
         if sizes[1] < 80:
-            self.splitter.setSizes([max(total - 360, 200), 360])
+            self.splitter.setSizes([max(total - 440, 300), 440])
         else:
             self.splitter.setSizes([total, 0])
+        self.update_canvas_overlays()
         self.save_settings()
 
     def confirm_exit(self) -> None:
@@ -3238,6 +5122,8 @@ class EqMapMainWindow(QMainWindow):
                 self.side_panel.rebuild_colour_list()
                 self.side_panel.rebuild_points_list()
                 self.side_panel.rebuild_pending_changes()
+                if hasattr(self, "nav_panel"):
+                    self.nav_panel.refresh()
             except Exception:
                 pass
         dirty_files = self.dirty_files()
@@ -3249,6 +5135,40 @@ class EqMapMainWindow(QMainWindow):
             self.dirty_label.setText("Clean")
             self.setWindowTitle(f"EQ Map Editor {VERSION}")
 
+
+    def externally_modified_files(self, files: Optional[list[Path]] = None) -> list[Path]:
+        candidates = files or self.loaded_files
+        modified: list[Path] = []
+        for file_path in candidates:
+            try:
+                loaded_mtime = self.loaded_file_mtimes.get(file_path)
+                if loaded_mtime is None or not file_path.exists():
+                    continue
+                current_mtime = file_path.stat().st_mtime
+                if current_mtime > loaded_mtime + 0.01:
+                    modified.append(file_path)
+            except Exception:
+                continue
+        return modified
+
+    def confirm_external_overwrite(self, files: Optional[list[Path]] = None) -> bool:
+        modified = self.externally_modified_files(files)
+        if not modified:
+            return True
+        file_list = "\n".join(f"- {path.name}" for path in modified[:12])
+        if len(modified) > 12:
+            file_list += f"\n...and {len(modified) - 12} more"
+        result = QMessageBox.warning(
+            self,
+            "Files Changed Outside EQ Map Editor",
+            "One or more map files were changed on disk after they were loaded.\n\n"
+            f"{file_list}\n\n"
+            "Saving now may overwrite those outside changes. Continue saving anyway?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return result == QMessageBox.Yes
+
     def save_edits(self) -> None:
         dirty_records = self.dirty_records()
         if not dirty_records:
@@ -3258,6 +5178,10 @@ class EqMapMainWindow(QMainWindow):
         by_file: dict[Path, list[Any]] = {}
         for record in dirty_records:
             by_file.setdefault(record.file_path, []).append(record)
+
+        if not self.confirm_external_overwrite(list(by_file.keys())):
+            self.status_label.setText("Save cancelled because files changed externally.")
+            return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved_files: list[str] = []
@@ -3463,7 +5387,11 @@ def main() -> int:
     parser.add_argument("paths", nargs="*", help="One or more EQ map .txt files, or a folder containing .txt files.")
     args = parser.parse_args()
 
+    set_windows_app_user_model_id()
     app = QApplication(sys.argv)
+    icon = app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     app.setStyle("Fusion")
     install_exception_hook()
     initial_files = expand_input_paths(args.paths) if args.paths else []
@@ -3472,7 +5400,7 @@ def main() -> int:
     window.show()
     QTimer.singleShot(0, window.run_deferred_startup_fit)
     QTimer.singleShot(250, window.run_deferred_startup_fit)
-    QTimer.singleShot(350, window.maybe_show_startup_warning)
+    QTimer.singleShot(300, window.maybe_show_welcome)
     return app.exec()
 
 

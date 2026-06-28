@@ -8,7 +8,10 @@ a = Analysis(
     ['app/eq_map_editor.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('app/resources', 'resources'),
+        ('app/palettes', 'palettes'),
+    ],
     hiddenimports=[
         'PySide6.QtCore',
         'PySide6.QtGui',
@@ -39,6 +42,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(Path('app/resources/eq_maps_icon.ico').resolve()),
 )
 
 coll = COLLECT(
