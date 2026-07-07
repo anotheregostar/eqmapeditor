@@ -39,8 +39,9 @@ jobs:
 
           Copy-Item dist\EQMapEditor release\EQMapEditor -Recurse
 
+          # Include the NPC Data folder, including the provided map data workbook.
           if (Test-Path "NPC Data") {
-            robocopy "NPC Data" "release\NPC Data" /E /XF "*Combined Map Data.xlsx" "*Expansion Apply Summary.csv" /XD "*map backup before expansion apply*"
+            robocopy "NPC Data" "release\NPC Data" /E /XF "*Expansion Apply Summary.csv" /XD "*map backup before expansion apply*"
             if ($LASTEXITCODE -gt 7) { exit $LASTEXITCODE }
             $global:LASTEXITCODE = 0
           }
