@@ -6,6 +6,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -22,18 +25,42 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements.txt pyinstaller
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --noconfirm eq_map_editor.spec
+          pyinstaller --clean --noconfirm eq_map_editor.spec
 
-      - name: Create portable zip
+      - name: Create release package
+        shell: pwsh
         run: |
-          Compress-Archive -Path dist\EQMapEditor -DestinationPath EQMapEditor-Windows.zip
+          if (Test-Path release) { Remove-Item release -Recurse -Force }
+          New-Item -ItemType Directory -Force release | Out-Null
+
+          Copy-Item dist\EQMapEditor release\EQMapEditor -Recurse
+
+          if (Test-Path "NPC Data") {
+            robocopy "NPC Data" "release\NPC Data" /E /XF "*Combined Map Data.xlsx" "*Expansion Apply Summary.csv" /XD "*map backup before expansion apply*"
+            if ($LASTEXITCODE -gt 7) { exit $LASTEXITCODE }
+            $global:LASTEXITCODE = 0
+          }
+
+          if (Test-Path docs) { Copy-Item docs release\docs -Recurse }
+          if (Test-Path README.md) { Copy-Item README.md release\README.md }
+          if (Test-Path CHANGELOG.md) { Copy-Item CHANGELOG.md release\CHANGELOG.md }
+          if (Test-Path LICENSE) { Copy-Item LICENSE release\LICENSE }
+
+          if (Test-Path EQMapEditor-Windows.zip) { Remove-Item EQMapEditor-Windows.zip -Force }
+          Compress-Archive -Path release\* -DestinationPath EQMapEditor-Windows.zip
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: EQMapEditor-Windows
           path: EQMapEditor-Windows.zip
+
+      - name: Publish GitHub release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: EQMapEditor-Windows.zip
