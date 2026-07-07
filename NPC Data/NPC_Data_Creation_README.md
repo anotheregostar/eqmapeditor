@@ -42,29 +42,6 @@ The script compares your current EverQuest map `.txt` files against an NPC list 
 EQMapEditor NPC Label List.csv
 ```
 
-## Required files to include
-
-If you want other users to create their own NPC data, include these files with the project or release package:
-
-```text
-extract_eq_map_points.py
-apply_combined_map_data.py
-EQMapEditor NPC Label List.csv
-requirements.txt
-```
-
-You should also include a short example map folder or sample output workbook if possible:
-
-```text
-sample_maps/
-  poknowledge.txt
-
-sample_output/
-  sample Combined Map Data.xlsx
-```
-
-The sample files make it much easier for users to confirm that Python, `openpyxl`, and the scripts are working correctly before they run the workflow on their own map folder.
-
 ## Required Python package
 
 The helper scripts require Python and `openpyxl`.
@@ -362,42 +339,3 @@ apply_combined_map_data.py
 ```
 
 That script can replace matched labels/coordinates and remove labels that do not fit the selected expansion. The editor is safer for manual review because it lets you preview changes zone-by-zone before saving.
-
-## Recommended release package contents for NPC data creation
-
-To let other users create their own NPC data, include this folder or equivalent in your release:
-
-```text
-npc_data_tools/
-  README_NPC_DATA.md
-  extract_eq_map_points.py
-  apply_combined_map_data.py
-  EQMapEditor NPC Label List.csv
-  requirements.txt
-  sample_maps/
-    poknowledge.txt
-  sample_output/
-    sample Combined Map Data.xlsx
-```
-
-At minimum, include:
-
-```text
-extract_eq_map_points.py
-EQMapEditor NPC Label List.csv
-requirements.txt
-```
-
-For users who want to batch-apply data outside the editor, also include:
-
-```text
-apply_combined_map_data.py
-```
-
-For users who want to rebuild the NPC CSV from their own server/database, include either:
-
-```text
-NPC export SQL
-```
-
-or clear documentation explaining which database fields are needed and how to export them to `EQMapEditor NPC Label List.csv`.
