@@ -2,7 +2,7 @@
 
 EQ Map Editor is a desktop PySide6 editor for EverQuest map `.txt` files. It can load, view, edit, recolour, search, compare, and safely save EverQuest map line and point records. It also includes NPC-data assisted tools for matching map labels to NPC data, removing expansion-inappropriate labels, and adding missing NPCs for a selected era.
 
-![Main editor window](docs/screenshots/main_window_overview.png)
+![Main editor window](docs/screenshots/01-main-interface.png)
 
 ## Safety first
 
@@ -78,7 +78,7 @@ The main layout uses three working areas:
 - **Map canvas** for visual editing, panning, zooming, selecting, and previewing changes.
 - **Inspector / sidebar tools** for selected item editing and NPC Match workflows.
 
-![Main editor window](docs/screenshots/main_window_overview.png)
+![Main editor window](docs/screenshots/01-main-interface.png)
 
 The top row contains the inline **File** menu, view controls, label/point toggles, background toggles, search, and sidebar toggle.
 
@@ -457,15 +457,13 @@ The NPC Match tab contains three collapsible workflow boxes:
 
 Each box can be expanded or collapsed from its checkbox/header. A collapsed box shrinks to a single line. When one box collapses, the available height is redistributed to the open boxes: one open box gets all of the available height, and two open boxes split the available height.
 
-![Collapsible NPC workflow boxes](docs/screenshots/npc_collapsible_workflows.png)
-
 The whole NPC Match tab is scrollable, and each workflow table supports manually resizable columns. Drag a table header divider left or right to widen or shrink a column.
 
 ## Workflow 1: NPC Match & Swap
 
 Use **NPC Match & Swap** when you want to replace existing map labels and coordinates with the matched NPC-data label and NPC map coordinates.
 
-![NPC Match and Swap overview](docs/screenshots/npc_match_swap_overview.png)
+![NPC Match filters and delete tools](docs/screenshots/npc_match_filters_delete.png)
 
 ### Steps
 
@@ -490,8 +488,6 @@ The NPC Match & Swap section includes:
 | Match Type | Shows all rows or only `Yes`, `Coordinate Match`, `Possible`, `NPC only`, or `Map only`. |
 | Presence | Shows all rows, only rows already present on the map, or only rows missing from the map. |
 | Search | Finds text across the current map label, NPC label, NPC name, NPC role, coordinates, and expansion text. |
-
-![NPC Match filters and delete tools](docs/screenshots/npc_match_filters_delete.png)
 
 ### Table columns
 
@@ -698,7 +694,3 @@ eq_map_editor.spec
 requirements.txt
 README.md
 ```
-
-## License
-
-Add your preferred license before publishing publicly.
