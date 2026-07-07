@@ -31,8 +31,12 @@ This version starts from the v0.3 feature set and adds:
 from __future__ import annotations
 
 import argparse
+import csv
+import difflib
 import json
+import math
 import os
+import re
 import traceback
 import shutil
 import sys
@@ -80,10 +84,18 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QStackedWidget,
     QMenu,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
+    QScrollArea,
+    QSizePolicy,
+    QStyledItemDelegate,
+    QStyle,
 )
 
 
-VERSION = "v1.1.19-svg-toolbar-icons"
+VERSION = "v1.1.27-npc-table-filters-delete"
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", APP_ROOT))
 
@@ -107,6 +119,64 @@ APP_ICON_PATH = RESOURCES_DIR / "eq_maps_icon.png"
 APP_ICON_ICO_PATH = RESOURCES_DIR / "eq_maps_icon.ico"
 SETTINGS_PATH = SETTINGS_DIR / "eq_map_editor_settings.json"
 LOG_PATH = LOGS_DIR / "eq_map_editor.log"
+
+
+EXPANSION_OPTIONS = [
+    ("Classic", 0),
+    ("The Ruins of Kunark", 1),
+    ("The Scars of Velious", 2),
+    ("The Shadows of Luclin", 3),
+    ("The Planes of Power", 4),
+    ("Legacy of Ykesha", 5),
+    ("Lost Dungeons of Norrath", 6),
+    ("Gates of Discord", 7),
+    ("Omens of War", 8),
+    ("Dragons of Norrath", 9),
+    ("Depths of Darkhollow", 10),
+    ("Prophecy of Ro", 11),
+    ("The Serpent's Spine", 12),
+    ("The Buried Sea", 13),
+    ("Secrets of Faydwer", 14),
+    ("Seeds of Destruction", 15),
+    ("Underfoot", 16),
+    ("House of Thule", 17),
+    ("Veil of Alaris", 18),
+    ("Rain of Fear", 19),
+    ("Call of the Forsaken", 20),
+    ("The Darkened Sea", 21),
+    ("The Broken Mirror", 22),
+    ("Empires of Kunark", 23),
+    ("Ring of Scale", 24),
+    ("The Burning Lands", 25),
+    ("Torment of Velious", 26),
+    ("Claws of Veeshan", 27),
+    ("Terror of Luclin", 28),
+    ("Night of Shadows", 29),
+    ("Laurion's Song", 30),
+    ("The Outer Brood", 31),
+]
+
+def expansion_label(number: Optional[int]) -> str:
+    if number is None or number < 0:
+        return "Unknown"
+    for name, value in EXPANSION_OPTIONS:
+        if value == number:
+            return f"{name} ({value})"
+    return str(number)
+
+def npc_is_valid_for_expansion(npc: "NpcDataRow", selected_expansion: int) -> bool:
+    """Return True when an NPC should exist in the selected expansion era.
+
+    Unknown/negative min values are treated as no known lower bound.
+    Unknown/negative max values are treated as no known upper bound.
+    """
+    min_num = npc.min_expansion_number
+    max_num = npc.max_expansion_number
+    if min_num is not None and min_num >= 0 and min_num > selected_expansion:
+        return False
+    if max_num is not None and max_num >= 0 and max_num < selected_expansion:
+        return False
+    return True
 
 for _folder in (LOGS_DIR, SETTINGS_DIR, BACKUPS_DIR, RESOURCES_DIR, PALETTES_DIR):
     _folder.mkdir(parents=True, exist_ok=True)
@@ -310,10 +380,322 @@ class MapPointRecord:
         )
 
 
+class ExistingLabelStyleDelegate(QStyledItemDelegate):
+    """Draws existing map-label style choices with an inline RGB swatch.
+
+    The combo box still stores the MapPointRecord object as item data, but the
+    popup list is easier to scan because each row visually shows the colour that
+    would be copied by the Match button.
+    """
+
+    def paint(self, painter: QPainter, option, index) -> None:  # type: ignore[override]
+        painter.save()
+        try:
+            point = index.data(Qt.UserRole)
+            display_text = str(index.data(Qt.DisplayRole) or "")
+            selected = bool(option.state & QStyle.State_Selected)
+            if selected:
+                painter.fillRect(option.rect, option.palette.highlight())
+                text_colour = option.palette.highlightedText().color()
+            else:
+                text_colour = option.palette.text().color()
+
+            if point is None:
+                painter.setPen(text_colour)
+                painter.drawText(option.rect.adjusted(8, 0, -4, 0), Qt.AlignVCenter | Qt.AlignLeft, display_text)
+                return
+
+            r = max(0, min(255, int(getattr(point, "r", 0))))
+            g = max(0, min(255, int(getattr(point, "g", 0))))
+            b = max(0, min(255, int(getattr(point, "b", 0))))
+            size_value = float(getattr(point, "size", 0.0))
+            label = str(getattr(point, "label", display_text)).strip() or display_text
+
+            swatch_rect = QRect(option.rect.left() + 6, option.rect.top() + 4, 22, max(12, option.rect.height() - 8))
+            border = QColor(30, 30, 30) if (r + g + b) > 360 else QColor(220, 220, 220)
+            painter.setPen(QPen(border, 1))
+            painter.setBrush(QBrush(QColor(r, g, b)))
+            painter.drawRoundedRect(swatch_rect, 3, 3)
+
+            painter.setPen(text_colour)
+            text_rect = option.rect.adjusted(36, 0, -4, 0)
+            painter.drawText(
+                text_rect,
+                Qt.AlignVCenter | Qt.AlignLeft,
+                f"{label}  [{r},{g},{b} / {size_value:g}]",
+            )
+        finally:
+            painter.restore()
+
+    def sizeHint(self, option, index) -> QSize:  # type: ignore[override]
+        size = super().sizeHint(option, index)
+        return QSize(max(size.width(), 220), max(size.height(), 26))
+
+
+class ExistingLabelStyleCombo(QComboBox):
+    """Combo that refreshes its map-label style list right before opening."""
+
+    def showPopup(self) -> None:  # type: ignore[override]
+        owner = self.property("owner")
+        if owner is not None and hasattr(owner, "rebuild_missing_style_match_combo"):
+            owner.rebuild_missing_style_match_combo()
+        if self.view() is not None:
+            self.view().setMinimumWidth(max(self.width(), 360))
+        super().showPopup()
+
+
 @dataclass
 class LoadedMap:
     lines: list[MapLineRecord]
     points: list[MapPointRecord]
+
+
+@dataclass
+class NpcDataRow:
+    source_index: int
+    zone_shortname: str
+    npc_name: str
+    npc_role: str
+    npc_label: str
+    x: float
+    y: float
+    z: float
+    min_expansion_number: Optional[int]
+    max_expansion_number: Optional[int]
+    min_expansion_name: str
+    max_expansion_name: str
+    raw: dict[str, Any]
+
+
+@dataclass
+class NpcMatchResult:
+    map_record: Optional[MapPointRecord]
+    npc_row: Optional[NpcDataRow]
+    match_type: str
+    confidence: str
+    score: float
+    distance: Optional[float]
+    selected: bool = False
+
+
+@dataclass
+class EraCleanupResult:
+    map_record: MapPointRecord
+    npc_row: NpcDataRow
+    era_status: str
+    match_type: str
+    confidence: str
+    score: float
+    distance: Optional[float]
+    selected: bool = False
+
+
+@dataclass
+class MissingNpcResult:
+    npc_row: NpcDataRow
+    npc_label: str
+    selected: bool = False
+
+
+def clean_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text in {"\\N", "None", "nan", "NaN"}:
+        return ""
+    return text
+
+
+def numeric_cell(value: Any) -> Optional[float]:
+    text = clean_cell(value)
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_npc_match_text(value: str) -> str:
+    """Match the batch script's normalize_text(): lowercase and remove non-alphanumerics."""
+    if value is None:
+        return ""
+    value = str(value).strip().lower()
+    return re.sub(r"[^a-z0-9]", "", value)
+
+
+def clean_map_label_for_npc_match(label: str) -> str:
+    """Match the batch script: remove trailing role notes like _(Banker)."""
+    if label is None:
+        return ""
+    label = str(label).strip()
+    label = re.sub(r"(?:_\([^)]*\))+$", "", label)
+    return label.strip()
+
+
+def get_name_aliases_for_npc_match(value: str) -> set[str]:
+    """Build the same alias forms used by extract_eq_map_points.py."""
+    if value is None:
+        return set()
+
+    raw = str(value).strip()
+    cleaned = clean_map_label_for_npc_match(raw)
+    aliases: set[str] = set()
+
+    common_prefix_roles = {
+        "banker", "merchant", "general", "parcels", "parcel", "guildmaster",
+        "gm", "trainer", "vendor", "keeper", "priest", "high", "grandmaster",
+        "master", "mistress", "lord", "lady", "warlord", "grave", "savage",
+        "oracle", "phantasmist", "virtuoso", "warder", "assassin", "warlock",
+        "shaman", "druid", "wizard", "enchanter", "bard", "necromancer",
+        "shadow", "knight", "beastlord", "ranger", "cleric", "warrior",
+        "rogue", "monk", "paladin", "magician", "berserker",
+    }
+
+    for candidate in [raw, cleaned]:
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        aliases.add(candidate)
+        parts = [part for part in candidate.split("_") if part]
+        if len(parts) >= 2:
+            first = parts[0].lower()
+            if first in common_prefix_roles:
+                aliases.add("_".join(parts[1:]))
+            if len(parts[-1]) >= 4:
+                aliases.add(parts[-1])
+
+    role_match = re.search(r"_\(([^)]*)\)$", raw)
+    if role_match and cleaned:
+        role_text = role_match.group(1).strip().split(",")[0].strip()
+        if role_text:
+            aliases.add(f"{role_text}_{cleaned}")
+
+    return {alias for alias in aliases if alias}
+
+
+def true_exact_name_match(npc_name: str, map_match_label: str) -> bool:
+    return normalize_npc_match_text(npc_name) == normalize_npc_match_text(map_match_label)
+
+
+def possible_name_match(npc_name: str, map_match_label: str) -> bool:
+    npc_aliases = get_name_aliases_for_npc_match(npc_name)
+    map_aliases = get_name_aliases_for_npc_match(map_match_label)
+    for npc_alias in npc_aliases:
+        for map_alias in map_aliases:
+            npc_norm = normalize_npc_match_text(npc_alias)
+            map_norm = normalize_npc_match_text(map_alias)
+            if not npc_norm or not map_norm:
+                continue
+            if npc_norm == map_norm:
+                return True
+            if npc_norm.startswith(map_norm) and len(map_norm) >= 4:
+                return True
+            if map_norm.startswith(npc_norm) and len(npc_norm) >= 4:
+                return True
+            ratio = difflib.SequenceMatcher(None, npc_norm, map_norm).ratio()
+            if ratio >= 0.88:
+                return True
+    return False
+
+
+def normalized_key(text: str) -> str:
+    # Kept for older UI sorting/search helpers. NPC matching now uses the script-compatible helpers above.
+    text = clean_cell(text).lower()
+    text = text.replace("`", "").replace("'", "")
+    text = re.sub(r"[()\[\]{}]", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(part for part in text.split() if part)
+
+
+def normalized_tokens(text: str) -> set[str]:
+    return set(normalized_key(text).split())
+
+
+def map_safe_label_part(text: str) -> str:
+    text = clean_cell(text)
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip("_")
+
+
+def generated_npc_label(npc_name: str, npc_role: str) -> str:
+    name = map_safe_label_part(npc_name)
+    role = map_safe_label_part(npc_role)
+    if role:
+        return f"{name}_({role})"
+    return name
+
+
+def row_get(row: dict[str, Any], *names: str) -> str:
+    lowered = {str(k).strip().lower(): v for k, v in row.items()}
+    for name in names:
+        if name.lower() in lowered:
+            return clean_cell(lowered[name.lower()])
+    return ""
+
+
+def row_get_number(row: dict[str, Any], *names: str) -> Optional[float]:
+    lowered = {str(k).strip().lower(): v for k, v in row.items()}
+    for name in names:
+        if name.lower() in lowered:
+            value = numeric_cell(lowered[name.lower()])
+            if value is not None:
+                return value
+    return None
+
+
+def row_get_int(row: dict[str, Any], *names: str) -> Optional[int]:
+    value = row_get_number(row, *names)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def point_distance(point: MapPointRecord, npc: NpcDataRow) -> float:
+    return math.sqrt((point.x - npc.x) ** 2 + (point.y - npc.y) ** 2 + (point.z - npc.z) ** 2)
+
+
+def score_point_to_npc(point: MapPointRecord, npc: NpcDataRow) -> tuple[float, str, Optional[float]]:
+    """Score a single point/NPC pair using the same status rules as extract_eq_map_points.py.
+
+    Priority:
+      1. exact NPC-name-to-map-match-label => Yes
+      2. alias/fuzzy possible name match => Possible
+      3. if that Possible match is within 20 units => Coordinate Match
+      4. no name-based possible match => No
+
+    This intentionally does not coordinate-match unrelated nearby labels.
+    """
+    map_match_label = clean_map_label_for_npc_match(point.label)
+    dist = point_distance(point, npc)
+    if true_exact_name_match(npc.npc_name, map_match_label):
+        return 100.0, "Yes", dist
+    if possible_name_match(npc.npc_name, map_match_label):
+        if dist != math.inf and -20 < dist < 20:
+            return 96.0, "Coordinate Match", dist
+        return 82.0, "Possible", dist
+    return 0.0, "No", dist
+
+
+def confidence_from_score(score: float) -> str:
+    if score >= 88:
+        return "High"
+    if score >= 72:
+        return "Medium"
+    if score >= 60:
+        return "Low"
+    return ""
+
+
+def current_zone_shortname_from_files(file_paths: list[Path]) -> str:
+    if not file_paths:
+        return ""
+    stem = Path(file_paths[0]).stem
+    return stem.split("_", 1)[0].lower()
 
 
 def clamp_rgb(value: str | int) -> int:
@@ -585,6 +967,36 @@ class AddRecordCommand:
         if self.record not in self.collection:
             self.collection.append(self.record)
         self.record.dirty = True
+        self.main_window.render_map(keep_view=True)
+        self.main_window.side_panel.rebuild_layers()
+        self.main_window.update_dirty_indicator()
+
+
+
+class AddRecordsCommand:
+    def __init__(self, label: str, main_window: "EqMapMainWindow", records: list[Any], collection_name: str) -> None:
+        self.label = label
+        self.main_window = main_window
+        self.records = records
+        self.collection_name = collection_name
+
+    @property
+    def collection(self):
+        return getattr(self.main_window.loaded_map, self.collection_name)
+
+    def undo(self) -> None:
+        for record in self.records:
+            if record in self.collection:
+                self.collection.remove(record)
+        self.main_window.render_map(keep_view=True)
+        self.main_window.side_panel.rebuild_layers()
+        self.main_window.update_dirty_indicator()
+
+    def redo(self) -> None:
+        for record in self.records:
+            if record not in self.collection:
+                self.collection.append(record)
+            record.dirty = True
         self.main_window.render_map(keep_view=True)
         self.main_window.side_panel.rebuild_layers()
         self.main_window.update_dirty_indicator()
@@ -1591,6 +2003,53 @@ class SidePanel(QWidget):
         self._build_ui()
         self.set_record(None)
 
+
+    def _make_collapsible_group(self, title: str, expanded: bool = True) -> tuple[QGroupBox, QVBoxLayout]:
+        """Create a checkable workflow box whose contents collapse to a one-line header."""
+        group = QGroupBox(title)
+        group.setCheckable(True)
+        group.setChecked(expanded)
+        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        outer_layout = QVBoxLayout(group)
+        outer_layout.setContentsMargins(8, 8, 8, 8)
+        content = QWidget(group)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 2, 0, 0)
+        outer_layout.addWidget(content)
+
+        def apply_collapsed_state(checked: bool) -> None:
+            content.setVisible(checked)
+            if checked:
+                group.setMinimumHeight(0)
+                group.setMaximumHeight(16777215)
+            else:
+                # A checked QGroupBox keeps its title/checkbox visible at roughly this height.
+                group.setMinimumHeight(34)
+                group.setMaximumHeight(38)
+            if hasattr(self, "rebalance_npc_workflow_boxes"):
+                QTimer.singleShot(0, self.rebalance_npc_workflow_boxes)
+
+        apply_collapsed_state(expanded)
+        group.toggled.connect(apply_collapsed_state)
+        group._collapsible_content = content  # keep a reference for PySide
+        return group, content_layout
+
+    def rebalance_npc_workflow_boxes(self) -> None:
+        """Give collapsed NPC workflow boxes one line and split remaining height across open boxes."""
+        if not hasattr(self, "npc_workflow_splitter") or not hasattr(self, "npc_workflow_groups"):
+            return
+        groups = list(self.npc_workflow_groups)
+        if not groups:
+            return
+        splitter_height = max(self.npc_workflow_splitter.height(), 420)
+        collapsed_size = 38
+        open_groups = [group for group in groups if group.isChecked()]
+        collapsed_groups = [group for group in groups if not group.isChecked()]
+        remaining = max(120, splitter_height - collapsed_size * len(collapsed_groups))
+        open_size = max(180, remaining // max(1, len(open_groups)))
+        sizes = [open_size if group.isChecked() else collapsed_size for group in groups]
+        self.npc_workflow_splitter.setSizes(sizes)
+
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -1905,6 +2364,236 @@ class SidePanel(QWidget):
         points_layout.addWidget(point_bulk_group)
         self.tabs.addTab(points_tab, "Points")
 
+        npc_tab = QWidget()
+        npc_outer_layout = QVBoxLayout(npc_tab)
+        npc_outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        npc_scroll = QScrollArea()
+        npc_scroll.setWidgetResizable(True)
+        npc_scroll.setFrameShape(QScrollArea.NoFrame)
+        npc_scroll_widget = QWidget()
+        npc_layout = QVBoxLayout(npc_scroll_widget)
+        npc_layout.setContentsMargins(8, 8, 8, 8)
+        npc_layout.setSpacing(8)
+
+        self.npc_workflow_splitter = QSplitter(Qt.Vertical)
+        self.npc_workflow_splitter.setChildrenCollapsible(False)
+        npc_layout.addWidget(self.npc_workflow_splitter, 1)
+
+        npc_source_group, npc_source_layout = self._make_collapsible_group("NPC Match & Swap", expanded=True)
+        self.npc_source_label = QLabel("No NPC data source selected.")
+        self.npc_source_label.setWordWrap(True)
+        npc_source_layout.addWidget(self.npc_source_label)
+
+        npc_source_buttons = QHBoxLayout()
+        self.npc_choose_source_button = QPushButton("Choose NPC Data")
+        self.npc_reload_source_button = QPushButton("Reload")
+        npc_source_buttons.addWidget(self.npc_choose_source_button)
+        npc_source_buttons.addWidget(self.npc_reload_source_button)
+        npc_source_layout.addLayout(npc_source_buttons)
+
+        npc_action_buttons = QHBoxLayout()
+        self.npc_compare_button = QPushButton("Compare Current Zone")
+        self.npc_select_all_button = QPushButton("Select All")
+        self.npc_select_none_button = QPushButton("Select None")
+        npc_action_buttons.addWidget(self.npc_compare_button)
+        npc_action_buttons.addWidget(self.npc_select_all_button)
+        npc_action_buttons.addWidget(self.npc_select_none_button)
+        npc_source_layout.addLayout(npc_action_buttons)
+
+        npc_filter_row = QHBoxLayout()
+        self.npc_match_type_filter_combo = QComboBox()
+        self.npc_match_type_filter_combo.addItems([
+            "All match types",
+            "Yes",
+            "Coordinate Match",
+            "Possible",
+            "NPC only",
+            "Map only",
+        ])
+        self.npc_presence_filter_combo = QComboBox()
+        self.npc_presence_filter_combo.addItems([
+            "All presence",
+            "Present on map",
+            "Missing from map",
+        ])
+        self.npc_search_edit = QLineEdit()
+        self.npc_search_edit.setPlaceholderText("Search current/NPC label, NPC name, role, or coordinates...")
+        npc_filter_row.addWidget(QLabel("Filter:"))
+        npc_filter_row.addWidget(self.npc_match_type_filter_combo)
+        npc_filter_row.addWidget(self.npc_presence_filter_combo)
+        npc_filter_row.addWidget(self.npc_search_edit, 1)
+        npc_source_layout.addLayout(npc_filter_row)
+
+        npc_preview_buttons = QHBoxLayout()
+        self.npc_preview_button = QPushButton("Preview Selected")
+        self.npc_clear_preview_button = QPushButton("Clear Preview")
+        self.npc_apply_button = QPushButton("Apply Selected")
+        self.npc_delete_from_map_button = QPushButton("Delete Selected From Map")
+        self.npc_apply_button.setObjectName("primaryButton")
+        self.npc_delete_from_map_button.setObjectName("dangerButton")
+        self.npc_delete_from_map_button.setToolTip("Marks selected NPC-match rows that are already present on the loaded map for deletion. Save Edits removes them from the text file.")
+        npc_preview_buttons.addWidget(self.npc_preview_button)
+        npc_preview_buttons.addWidget(self.npc_clear_preview_button)
+        npc_preview_buttons.addWidget(self.npc_apply_button)
+        npc_preview_buttons.addWidget(self.npc_delete_from_map_button)
+        npc_source_layout.addLayout(npc_preview_buttons)
+
+        self.npc_summary_label = QLabel("Load a zone and click Compare Current Zone.")
+        self.npc_summary_label.setWordWrap(True)
+        self.npc_summary_label.setObjectName("inspectorHelperText")
+        npc_source_layout.addWidget(self.npc_summary_label)
+
+        self.npc_match_table = QTableWidget(0, 9)
+        self.npc_match_table.setHorizontalHeaderLabels([
+            "Use", "Match", "Conf", "Current Label", "NPC Label", "Map XYZ", "NPC XYZ", "Dist", "Role"
+        ])
+        self.npc_match_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.npc_match_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.npc_match_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.npc_match_table.horizontalHeader().setSectionsMovable(False)
+        self.npc_match_table.setMinimumHeight(180)
+        npc_source_layout.addWidget(self.npc_match_table, 1)
+        self.npc_workflow_splitter.addWidget(npc_source_group)
+
+        era_group, era_layout = self._make_collapsible_group("Expansion / Era Cleanup", expanded=False)
+        era_form = QFormLayout()
+        self.era_expansion_combo = QComboBox()
+        for expansion_name, expansion_number in EXPANSION_OPTIONS:
+            self.era_expansion_combo.addItem(f"{expansion_number}: {expansion_name}", expansion_number)
+        era_form.addRow("Current expansion", self.era_expansion_combo)
+        era_layout.addLayout(era_form)
+
+        era_buttons = QHBoxLayout()
+        self.era_save_default_button = QPushButton("Save Expansion Setting")
+        self.era_scan_button = QPushButton("Scan Era Labels")
+        self.era_select_all_button = QPushButton("Select All Flagged")
+        self.era_select_none_button = QPushButton("Select None")
+        era_buttons.addWidget(self.era_save_default_button)
+        era_buttons.addWidget(self.era_scan_button)
+        era_buttons.addWidget(self.era_select_all_button)
+        era_buttons.addWidget(self.era_select_none_button)
+        era_layout.addLayout(era_buttons)
+
+        era_apply_buttons = QHBoxLayout()
+        self.era_preview_button = QPushButton("Preview Removals")
+        self.era_clear_preview_button = QPushButton("Clear Preview")
+        self.era_remove_button = QPushButton("Remove Selected Labels")
+        self.era_remove_button.setObjectName("primaryButton")
+        era_apply_buttons.addWidget(self.era_preview_button)
+        era_apply_buttons.addWidget(self.era_clear_preview_button)
+        era_apply_buttons.addWidget(self.era_remove_button)
+        era_layout.addLayout(era_apply_buttons)
+
+        self.era_summary_label = QLabel("Select an expansion, then scan the loaded zone for labels outside that era.")
+        self.era_summary_label.setWordWrap(True)
+        self.era_summary_label.setObjectName("inspectorHelperText")
+        era_layout.addWidget(self.era_summary_label)
+
+        self.era_cleanup_table = QTableWidget(0, 10)
+        self.era_cleanup_table.setHorizontalHeaderLabels([
+            "Remove", "Status", "Current Label", "Matched NPC", "Min Exp", "Max Exp", "Map XYZ", "NPC XYZ", "Match", "Conf"
+        ])
+        self.era_cleanup_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.era_cleanup_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.era_cleanup_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.era_cleanup_table.horizontalHeader().setSectionsMovable(False)
+        self.era_cleanup_table.setMinimumHeight(160)
+        era_layout.addWidget(self.era_cleanup_table, 1)
+        self.npc_workflow_splitter.addWidget(era_group)
+
+        missing_group, missing_layout = self._make_collapsible_group("Add Missing NPCs for Current Era", expanded=True)
+        missing_buttons = QHBoxLayout()
+        self.missing_scan_button = QPushButton("Find Missing NPCs")
+        self.missing_select_all_button = QPushButton("Select All")
+        self.missing_select_none_button = QPushButton("Select None")
+        missing_buttons.addWidget(self.missing_scan_button)
+        missing_buttons.addWidget(self.missing_select_all_button)
+        missing_buttons.addWidget(self.missing_select_none_button)
+        missing_layout.addLayout(missing_buttons)
+
+        missing_style_row = QHBoxLayout()
+        missing_style_row.setSpacing(4)
+        missing_style_row.setContentsMargins(0, 0, 0, 0)
+        self.missing_colour_preview_label = QLabel("")
+        self.missing_colour_preview_label.setFixedSize(24, 22)
+        self.missing_colour_preview_label.setToolTip("Preview of the colour used for newly added NPC labels.")
+        self.missing_r_spin = self.rgb_spin(); self.missing_r_spin.setValue(255)
+        self.missing_g_spin = self.rgb_spin(); self.missing_g_spin.setValue(255)
+        self.missing_b_spin = self.rgb_spin(); self.missing_b_spin.setValue(0)
+        for spin in (self.missing_r_spin, self.missing_g_spin, self.missing_b_spin):
+            spin.setMinimumWidth(54)
+            spin.setMaximumWidth(64)
+        self.missing_size_spin = QDoubleSpinBox()
+        self.missing_size_spin.setRange(0.1, 99.0)
+        self.missing_size_spin.setDecimals(2)
+        self.missing_size_spin.setValue(2.0)
+        self.missing_size_spin.setMinimumWidth(58)
+        self.missing_size_spin.setMaximumWidth(68)
+        self.missing_match_label_combo = ExistingLabelStyleCombo()
+        self.missing_match_label_combo.setProperty("owner", self)
+        self.missing_match_label_combo.setMinimumWidth(120)
+        self.missing_match_label_combo.setMaximumWidth(190)
+        self.missing_match_label_combo.setMaxVisibleItems(24)
+        self.missing_match_label_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.missing_match_label_combo.setMinimumContentsLength(24)
+        self.missing_match_label_combo.setItemDelegate(ExistingLabelStyleDelegate(self.missing_match_label_combo))
+        self.missing_match_label_combo.setToolTip("Choose an existing map label; the dropdown shows each label's colour before you copy its RGB/size.")
+        self.missing_match_label_combo.addItem("Match existing label style...", None)
+        self.missing_match_source_preview_label = QLabel("")
+        self.missing_match_source_preview_label.setFixedSize(24, 22)
+        self.missing_match_source_preview_label.setToolTip("Preview of the selected existing label colour before copying its style.")
+        self.missing_match_label_button = QPushButton("Match")
+        self.missing_match_label_button.setMaximumWidth(64)
+        missing_style_row.addWidget(QLabel("Style:"))
+        missing_style_row.addWidget(self.missing_colour_preview_label)
+        missing_style_row.addWidget(QLabel("R"))
+        missing_style_row.addWidget(self.missing_r_spin)
+        missing_style_row.addWidget(QLabel("G"))
+        missing_style_row.addWidget(self.missing_g_spin)
+        missing_style_row.addWidget(QLabel("B"))
+        missing_style_row.addWidget(self.missing_b_spin)
+        missing_style_row.addWidget(QLabel("Size"))
+        missing_style_row.addWidget(self.missing_size_spin)
+        missing_style_row.addWidget(self.missing_match_label_combo, 1)
+        missing_style_row.addWidget(self.missing_match_source_preview_label)
+        missing_style_row.addWidget(self.missing_match_label_button)
+        missing_layout.addLayout(missing_style_row)
+
+        missing_apply_buttons = QHBoxLayout()
+        self.missing_preview_button = QPushButton("Preview Adds")
+        self.missing_clear_preview_button = QPushButton("Clear Preview")
+        self.missing_add_button = QPushButton("Add Selected NPCs")
+        self.missing_add_button.setObjectName("primaryButton")
+        missing_apply_buttons.addWidget(self.missing_preview_button)
+        missing_apply_buttons.addWidget(self.missing_clear_preview_button)
+        missing_apply_buttons.addWidget(self.missing_add_button)
+        missing_layout.addLayout(missing_apply_buttons)
+
+        self.missing_summary_label = QLabel("Find NPCs valid for the selected expansion that are not already on the loaded map.")
+        self.missing_summary_label.setWordWrap(True)
+        self.missing_summary_label.setObjectName("inspectorHelperText")
+        missing_layout.addWidget(self.missing_summary_label)
+
+        self.missing_npc_table = QTableWidget(0, 7)
+        self.missing_npc_table.setHorizontalHeaderLabels([
+            "Add", "NPC Label", "NPC XYZ", "Min Exp", "Max Exp", "NPC Name", "Role"
+        ])
+        self.missing_npc_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.missing_npc_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.missing_npc_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.missing_npc_table.horizontalHeader().setSectionsMovable(False)
+        self.missing_npc_table.setMinimumHeight(180)
+        missing_layout.addWidget(self.missing_npc_table, 1)
+        self.npc_workflow_splitter.addWidget(missing_group)
+        self.npc_workflow_groups = [npc_source_group, era_group, missing_group]
+        self.npc_workflow_splitter.setSizes([360, 38, 360])
+        QTimer.singleShot(0, self.rebalance_npc_workflow_boxes)
+
+        npc_scroll.setWidget(npc_scroll_widget)
+        npc_outer_layout.addWidget(npc_scroll)
+        self.tabs.addTab(npc_tab, "NPC Match")
+
         zones_tab = QWidget()
         zones_layout = QVBoxLayout(zones_tab)
 
@@ -1979,6 +2668,38 @@ class SidePanel(QWidget):
         self.point_bulk_pick_colour_button.clicked.connect(self.pick_point_bulk_colour)
         self.point_bulk_apply_colour_button.clicked.connect(self.main_window.bulk_recolour_checked_points)
         self.point_bulk_delete_button.clicked.connect(self.main_window.bulk_delete_checked_points)
+        self.npc_choose_source_button.clicked.connect(self.main_window.choose_npc_data_source)
+        self.npc_reload_source_button.clicked.connect(self.main_window.reload_npc_data_source)
+        self.npc_compare_button.clicked.connect(self.main_window.compare_current_zone_to_npc_data)
+        self.npc_select_all_button.clicked.connect(lambda: self.set_all_npc_match_rows_checked(True))
+        self.npc_select_none_button.clicked.connect(lambda: self.set_all_npc_match_rows_checked(False))
+        self.npc_match_type_filter_combo.currentIndexChanged.connect(lambda _index: self.apply_npc_match_filters())
+        self.npc_presence_filter_combo.currentIndexChanged.connect(lambda _index: self.apply_npc_match_filters())
+        self.npc_search_edit.textChanged.connect(lambda _text: self.apply_npc_match_filters())
+        self.npc_preview_button.clicked.connect(self.main_window.preview_selected_npc_matches)
+        self.npc_clear_preview_button.clicked.connect(self.main_window.clear_npc_match_preview)
+        self.npc_apply_button.clicked.connect(self.main_window.apply_selected_npc_matches)
+        self.npc_delete_from_map_button.clicked.connect(self.main_window.delete_selected_npc_match_points_from_map)
+        self.era_save_default_button.clicked.connect(self.main_window.save_current_expansion_setting)
+        self.era_scan_button.clicked.connect(self.main_window.scan_current_zone_for_era_cleanup)
+        self.era_select_all_button.clicked.connect(lambda: self.set_all_era_cleanup_rows_checked(True))
+        self.era_select_none_button.clicked.connect(lambda: self.set_all_era_cleanup_rows_checked(False))
+        self.era_preview_button.clicked.connect(self.main_window.preview_selected_era_cleanup)
+        self.era_clear_preview_button.clicked.connect(self.main_window.clear_era_cleanup_preview)
+        self.era_remove_button.clicked.connect(self.main_window.remove_selected_era_cleanup_labels)
+        self.missing_scan_button.clicked.connect(self.main_window.find_missing_npcs_for_current_era)
+        self.missing_select_all_button.clicked.connect(lambda: self.set_all_missing_npc_rows_checked(True))
+        self.missing_select_none_button.clicked.connect(lambda: self.set_all_missing_npc_rows_checked(False))
+        self.missing_preview_button.clicked.connect(self.main_window.preview_selected_missing_npcs)
+        self.missing_clear_preview_button.clicked.connect(self.main_window.clear_missing_npc_preview)
+        self.missing_add_button.clicked.connect(self.main_window.add_selected_missing_npcs_to_map)
+        self.missing_r_spin.valueChanged.connect(lambda _value: self.update_missing_colour_preview())
+        self.missing_g_spin.valueChanged.connect(lambda _value: self.update_missing_colour_preview())
+        self.missing_b_spin.valueChanged.connect(lambda _value: self.update_missing_colour_preview())
+        self.missing_match_label_combo.currentIndexChanged.connect(lambda _index: self.update_missing_match_source_preview())
+        self.missing_match_label_button.clicked.connect(self.match_missing_style_from_existing_label)
+        self.update_missing_colour_preview()
+        self.update_missing_match_source_preview()
         self.choose_map_folder_button.clicked.connect(self.main_window.choose_map_folder)
         self.zone_search_button.clicked.connect(self.main_window.rebuild_zone_list)
         self.zone_search_edit.returnPressed.connect(self.main_window.rebuild_zone_list)
@@ -1990,6 +2711,381 @@ class SidePanel(QWidget):
         self.pending_revert_all_button.clicked.connect(self.main_window.reload_from_disk)
         self.pending_save_button.clicked.connect(self.main_window.save_edits)
         self.refresh_palette_combo()
+
+
+    def update_missing_colour_preview(self) -> None:
+        if not hasattr(self, "missing_colour_preview_label"):
+            return
+        r = self.missing_r_spin.value()
+        g = self.missing_g_spin.value()
+        b = self.missing_b_spin.value()
+        border = "#222222" if (r + g + b) > 360 else "#dddddd"
+        self.missing_colour_preview_label.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); border: 1px solid {border}; border-radius: 3px;"
+        )
+
+
+    def _existing_label_style_icon(self, point: MapPointRecord) -> QIcon:
+        pixmap = QPixmap(22, 16)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        try:
+            r, g, b = int(point.r), int(point.g), int(point.b)
+            border = QColor(30, 30, 30) if (r + g + b) > 360 else QColor(220, 220, 220)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(border, 1))
+            painter.setBrush(QBrush(QColor(r, g, b)))
+            painter.drawRoundedRect(QRect(1, 1, 20, 14), 3, 3)
+        finally:
+            painter.end()
+        return QIcon(pixmap)
+
+    def rebuild_missing_style_match_combo(self) -> None:
+        if not hasattr(self, "missing_match_label_combo"):
+            return
+        combo = self.missing_match_label_combo
+        previous_label = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Match existing label style...", None)
+        seen: set[str] = set()
+        for point in sorted(getattr(self.main_window.loaded_map, "points", []), key=lambda p: p.label.lower()):
+            label = point.label.strip()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            combo.addItem(self._existing_label_style_icon(point), label, point)
+            combo.setItemData(combo.count() - 1, f"RGB {int(point.r)}, {int(point.g)}, {int(point.b)}; size {float(point.size):g}", Qt.ToolTipRole)
+        if previous_label:
+            index = combo.findText(previous_label)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        if combo.view() is not None:
+            combo.view().setMinimumWidth(max(combo.width(), 360))
+        combo.blockSignals(False)
+        self.update_missing_match_source_preview()
+
+    def update_missing_match_source_preview(self) -> None:
+        if not hasattr(self, "missing_match_source_preview_label"):
+            return
+        point = self.missing_match_label_combo.currentData() if hasattr(self, "missing_match_label_combo") else None
+        if point is None:
+            self.missing_match_source_preview_label.setStyleSheet(
+                "background-color: transparent; border: 1px dashed #888888; border-radius: 3px;"
+            )
+            self.missing_match_source_preview_label.setToolTip("Choose an existing label to preview its colour before matching.")
+            return
+        r, g, b = int(point.r), int(point.g), int(point.b)
+        border = "#222222" if (r + g + b) > 360 else "#dddddd"
+        self.missing_match_source_preview_label.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); border: 1px solid {border}; border-radius: 3px;"
+        )
+        self.missing_match_source_preview_label.setToolTip(
+            f"Selected existing label style: RGB {r}, {g}, {b}; size {float(point.size):g}"
+        )
+
+    def match_missing_style_from_existing_label(self) -> None:
+        if not hasattr(self, "missing_match_label_combo"):
+            return
+        point = self.missing_match_label_combo.currentData()
+        if point is None:
+            QMessageBox.information(self, "Match Existing Label", "Choose an existing label from the style dropdown first.")
+            return
+        self.missing_r_spin.setValue(int(point.r))
+        self.missing_g_spin.setValue(int(point.g))
+        self.missing_b_spin.setValue(int(point.b))
+        self.missing_size_spin.setValue(float(point.size))
+        self.update_missing_colour_preview()
+
+    def set_npc_source_path(self, path_text: str) -> None:
+        if hasattr(self, "npc_source_label"):
+            if path_text:
+                self.npc_source_label.setText(f"NPC data: {path_text}")
+            else:
+                self.npc_source_label.setText("No NPC data source selected.")
+
+    def _make_table_columns_user_resizable(self, table: QTableWidget, widths: Optional[list[int]] = None) -> None:
+        """Keep table columns manually resizable after content is populated."""
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        if widths:
+            for column, width in enumerate(widths):
+                if column < table.columnCount():
+                    table.setColumnWidth(column, width)
+
+    def _sync_npc_match_table_edits_to_results(self) -> None:
+        """Preserve checkbox and edited label state before filtering/rebuilding the match table."""
+        if not hasattr(self, "npc_match_table"):
+            return
+        table = self.npc_match_table
+        for row in range(table.rowCount()):
+            check_item = table.item(row, 0)
+            if check_item is None:
+                continue
+            result = check_item.data(Qt.UserRole)
+            if not isinstance(result, NpcMatchResult):
+                continue
+            result.selected = check_item.checkState() == Qt.Checked
+            label_item = table.item(row, 4)
+            if label_item is not None and result.npc_row is not None:
+                result.npc_row.npc_label = label_item.text().strip() or result.npc_row.npc_label
+
+    def npc_match_result_matches_filters(self, result: NpcMatchResult) -> bool:
+        match_filter = self.npc_match_type_filter_combo.currentText() if hasattr(self, "npc_match_type_filter_combo") else "All match types"
+        if match_filter != "All match types" and result.match_type != match_filter:
+            return False
+
+        presence_filter = self.npc_presence_filter_combo.currentText() if hasattr(self, "npc_presence_filter_combo") else "All presence"
+        if presence_filter == "Present on map" and result.map_record is None:
+            return False
+        if presence_filter == "Missing from map" and result.map_record is not None:
+            return False
+
+        query = self.npc_search_edit.text().strip().lower() if hasattr(self, "npc_search_edit") else ""
+        if query:
+            values: list[str] = [
+                result.match_type,
+                result.confidence,
+            ]
+            if result.map_record is not None:
+                values.extend([
+                    result.map_record.label,
+                    f"{result.map_record.x:.4f}",
+                    f"{result.map_record.y:.4f}",
+                    f"{result.map_record.z:.4f}",
+                ])
+            if result.npc_row is not None:
+                values.extend([
+                    result.npc_row.npc_label,
+                    result.npc_row.npc_name,
+                    result.npc_row.npc_role,
+                    f"{result.npc_row.x:.4f}",
+                    f"{result.npc_row.y:.4f}",
+                    f"{result.npc_row.z:.4f}",
+                    result.npc_row.min_expansion_name,
+                    result.npc_row.max_expansion_name,
+                ])
+            haystack = " ".join(str(value).lower() for value in values if value)
+            if query not in haystack:
+                return False
+        return True
+
+    def apply_npc_match_filters(self) -> None:
+        if not hasattr(self, "npc_match_table"):
+            return
+        self._sync_npc_match_table_edits_to_results()
+        all_results = list(getattr(self.main_window, "npc_match_results", []))
+        filtered = [result for result in all_results if self.npc_match_result_matches_filters(result)]
+        self.rebuild_npc_match_table(filtered, preserve_widths=True)
+        if hasattr(self, "npc_summary_label") and all_results:
+            checked_visible = sum(1 for result in filtered if result.selected)
+            self.npc_summary_label.setText(
+                getattr(self.main_window, "npc_match_base_summary", "")
+                + f"\nVisible after filters: {len(filtered):,} / {len(all_results):,}    Checked visible: {checked_visible:,}"
+            )
+
+    def set_all_npc_match_rows_checked(self, checked: bool) -> None:
+        if not hasattr(self, "npc_match_table"):
+            return
+        state = Qt.Checked if checked else Qt.Unchecked
+        for row in range(self.npc_match_table.rowCount()):
+            item = self.npc_match_table.item(row, 0)
+            if item is not None and item.flags() & Qt.ItemIsUserCheckable:
+                item.setCheckState(state)
+                result = item.data(Qt.UserRole)
+                if isinstance(result, NpcMatchResult):
+                    result.selected = checked
+
+    def checked_npc_match_results(self) -> list[NpcMatchResult]:
+        results: list[NpcMatchResult] = []
+        if not hasattr(self, "npc_match_table"):
+            return results
+        self._sync_npc_match_table_edits_to_results()
+        for row in range(self.npc_match_table.rowCount()):
+            check_item = self.npc_match_table.item(row, 0)
+            if check_item is None or check_item.checkState() != Qt.Checked:
+                continue
+            result = check_item.data(Qt.UserRole)
+            if not isinstance(result, NpcMatchResult):
+                continue
+            label_item = self.npc_match_table.item(row, 4)
+            if label_item is not None and result.npc_row is not None:
+                result.npc_row.npc_label = label_item.text().strip() or result.npc_row.npc_label
+            results.append(result)
+        return results
+
+    def rebuild_npc_match_table(self, results: list[NpcMatchResult], preserve_widths: bool = False) -> None:
+        if not hasattr(self, "npc_match_table"):
+            return
+        table = self.npc_match_table
+        previous_widths = [table.columnWidth(column) for column in range(table.columnCount())] if preserve_widths else []
+        table.setRowCount(0)
+        table.setSortingEnabled(False)
+        for result in results:
+            row = table.rowCount()
+            table.insertRow(row)
+
+            use_item = QTableWidgetItem("")
+            use_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+            use_item.setCheckState(Qt.Checked if result.selected else Qt.Unchecked)
+            use_item.setData(Qt.UserRole, result)
+            table.setItem(row, 0, use_item)
+
+            table.setItem(row, 1, QTableWidgetItem(result.match_type))
+            table.setItem(row, 2, QTableWidgetItem(result.confidence))
+            current_label = result.map_record.label if result.map_record is not None else ""
+            table.setItem(row, 3, QTableWidgetItem(current_label))
+
+            npc_label = result.npc_row.npc_label if result.npc_row is not None else ""
+            label_item = QTableWidgetItem(npc_label)
+            if result.npc_row is None:
+                label_item.setFlags(label_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 4, label_item)
+
+            if result.map_record is not None:
+                map_xyz = f"{result.map_record.x:.2f}, {result.map_record.y:.2f}, {result.map_record.z:.2f}"
+            else:
+                map_xyz = ""
+            table.setItem(row, 5, QTableWidgetItem(map_xyz))
+
+            if result.npc_row is not None:
+                npc_xyz = f"{result.npc_row.x:.2f}, {result.npc_row.y:.2f}, {result.npc_row.z:.2f}"
+                role = result.npc_row.npc_role
+            else:
+                npc_xyz = ""
+                role = ""
+            table.setItem(row, 6, QTableWidgetItem(npc_xyz))
+            dist_text = f"{result.distance:.2f}" if result.distance is not None else ""
+            table.setItem(row, 7, QTableWidgetItem(dist_text))
+            table.setItem(row, 8, QTableWidgetItem(role))
+
+        if preserve_widths and previous_widths:
+            self._make_table_columns_user_resizable(table, previous_widths)
+        else:
+            table.resizeColumnsToContents()
+            self._make_table_columns_user_resizable(table, [46, 120, 70, 190, 210, 155, 155, 70, 140])
+
+    def set_expansion_number(self, expansion_number: int) -> None:
+        if not hasattr(self, "era_expansion_combo"):
+            return
+        for index in range(self.era_expansion_combo.count()):
+            if int(self.era_expansion_combo.itemData(index)) == int(expansion_number):
+                self.era_expansion_combo.setCurrentIndex(index)
+                return
+
+    def current_expansion_number(self) -> int:
+        if not hasattr(self, "era_expansion_combo"):
+            return 0
+        value = self.era_expansion_combo.currentData()
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def current_expansion_name(self) -> str:
+        if not hasattr(self, "era_expansion_combo"):
+            return "Classic"
+        text = self.era_expansion_combo.currentText()
+        return text.split(": ", 1)[1] if ": " in text else text
+
+    def set_all_era_cleanup_rows_checked(self, checked: bool) -> None:
+        if not hasattr(self, "era_cleanup_table"):
+            return
+        state = Qt.Checked if checked else Qt.Unchecked
+        for row in range(self.era_cleanup_table.rowCount()):
+            item = self.era_cleanup_table.item(row, 0)
+            if item is not None and item.flags() & Qt.ItemIsUserCheckable:
+                item.setCheckState(state)
+
+    def checked_era_cleanup_results(self) -> list[EraCleanupResult]:
+        results: list[EraCleanupResult] = []
+        if not hasattr(self, "era_cleanup_table"):
+            return results
+        for row in range(self.era_cleanup_table.rowCount()):
+            check_item = self.era_cleanup_table.item(row, 0)
+            if check_item is None or check_item.checkState() != Qt.Checked:
+                continue
+            result = check_item.data(Qt.UserRole)
+            if isinstance(result, EraCleanupResult):
+                results.append(result)
+        return results
+
+    def rebuild_era_cleanup_table(self, results: list[EraCleanupResult]) -> None:
+        if not hasattr(self, "era_cleanup_table"):
+            return
+        table = self.era_cleanup_table
+        table.setRowCount(0)
+        table.setSortingEnabled(False)
+        for result in results:
+            row = table.rowCount()
+            table.insertRow(row)
+            use_item = QTableWidgetItem("")
+            use_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+            use_item.setCheckState(Qt.Checked if result.selected else Qt.Unchecked)
+            use_item.setData(Qt.UserRole, result)
+            table.setItem(row, 0, use_item)
+            table.setItem(row, 1, QTableWidgetItem(result.era_status))
+            table.setItem(row, 2, QTableWidgetItem(result.map_record.label))
+            table.setItem(row, 3, QTableWidgetItem(result.npc_row.npc_label))
+            table.setItem(row, 4, QTableWidgetItem(expansion_label(result.npc_row.min_expansion_number)))
+            table.setItem(row, 5, QTableWidgetItem(expansion_label(result.npc_row.max_expansion_number)))
+            table.setItem(row, 6, QTableWidgetItem(f"{result.map_record.x:.2f}, {result.map_record.y:.2f}, {result.map_record.z:.2f}"))
+            table.setItem(row, 7, QTableWidgetItem(f"{result.npc_row.x:.2f}, {result.npc_row.y:.2f}, {result.npc_row.z:.2f}"))
+            table.setItem(row, 8, QTableWidgetItem(result.match_type))
+            table.setItem(row, 9, QTableWidgetItem(result.confidence))
+        table.resizeColumnsToContents()
+        self._make_table_columns_user_resizable(table, [70, 135, 210, 210, 140, 140, 155, 155, 100, 70])
+
+    def set_all_missing_npc_rows_checked(self, checked: bool) -> None:
+        if not hasattr(self, "missing_npc_table"):
+            return
+        state = Qt.Checked if checked else Qt.Unchecked
+        for row in range(self.missing_npc_table.rowCount()):
+            item = self.missing_npc_table.item(row, 0)
+            if item is not None and item.flags() & Qt.ItemIsUserCheckable:
+                item.setCheckState(state)
+
+    def checked_missing_npc_results(self) -> list[MissingNpcResult]:
+        results: list[MissingNpcResult] = []
+        if not hasattr(self, "missing_npc_table"):
+            return results
+        for row in range(self.missing_npc_table.rowCount()):
+            check_item = self.missing_npc_table.item(row, 0)
+            if check_item is None or check_item.checkState() != Qt.Checked:
+                continue
+            result = check_item.data(Qt.UserRole)
+            if not isinstance(result, MissingNpcResult):
+                continue
+            label_item = self.missing_npc_table.item(row, 1)
+            if label_item is not None:
+                result.npc_label = label_item.text().strip() or result.npc_label
+            results.append(result)
+        return results
+
+    def rebuild_missing_npc_table(self, results: list[MissingNpcResult]) -> None:
+        if not hasattr(self, "missing_npc_table"):
+            return
+        table = self.missing_npc_table
+        table.setRowCount(0)
+        table.setSortingEnabled(False)
+        for result in results:
+            npc = result.npc_row
+            row = table.rowCount()
+            table.insertRow(row)
+            use_item = QTableWidgetItem("")
+            use_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+            use_item.setCheckState(Qt.Checked if result.selected else Qt.Unchecked)
+            use_item.setData(Qt.UserRole, result)
+            table.setItem(row, 0, use_item)
+            table.setItem(row, 1, QTableWidgetItem(result.npc_label))
+            table.setItem(row, 2, QTableWidgetItem(f"{npc.x:.2f}, {npc.y:.2f}, {npc.z:.2f}"))
+            table.setItem(row, 3, QTableWidgetItem(expansion_label(npc.min_expansion_number)))
+            table.setItem(row, 4, QTableWidgetItem(expansion_label(npc.max_expansion_number)))
+            table.setItem(row, 5, QTableWidgetItem(npc.npc_name))
+            table.setItem(row, 6, QTableWidgetItem(npc.npc_role))
+        table.resizeColumnsToContents()
+        self._make_table_columns_user_resizable(table, [55, 220, 155, 140, 140, 180, 160])
 
     def coord_spin(self) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
@@ -2865,7 +3961,7 @@ class OptionOneExplorerPanel(QWidget):
 class EqMapMainWindow(QMainWindow):
     def __init__(self, initial_files: Optional[list[Path]] = None) -> None:
         super().__init__()
-        self.setWindowTitle(f"EQ Map Editor {VERSION}")
+        self.setWindowTitle(f"EQ Map Editor")
         icon = app_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
@@ -2907,6 +4003,15 @@ class EqMapMainWindow(QMainWindow):
         self._fit_last_map_after_show = False
         self._drag_update_lock = False
         self.pending_line_start: Optional[QPointF] = None
+        self.npc_data_source_path = ""
+        self.current_expansion_number_setting = 0
+        self.npc_data_rows: list[NpcDataRow] = []
+        self.npc_match_results: list[NpcMatchResult] = []
+        self.era_cleanup_results: list[EraCleanupResult] = []
+        self.missing_npc_results: list[MissingNpcResult] = []
+        self.npc_preview_items: list[QGraphicsItem] = []
+        self.era_preview_items: list[QGraphicsItem] = []
+        self.missing_preview_items: list[QGraphicsItem] = []
 
         self.undo_stack: list[UndoCommand] = []
         self.redo_stack: list[UndoCommand] = []
@@ -3557,6 +4662,8 @@ class EqMapMainWindow(QMainWindow):
             "confirm_bulk_edit_over": int(self.confirm_bulk_edit_over),
             "confirm_bulk_delete_over": int(self.confirm_bulk_delete_over),
             "confirm_bulk_actions": bool(self.confirm_bulk_actions),
+            "npc_data_source_path": getattr(self, "npc_data_source_path", ""),
+            "current_expansion_number": int(getattr(self, "current_expansion_number_setting", 0)),
         }
 
     def save_settings(self) -> None:
@@ -3591,6 +4698,11 @@ class EqMapMainWindow(QMainWindow):
             self.confirm_bulk_edit_over = int(data.get("confirm_bulk_edit_over", 1))
             self.confirm_bulk_delete_over = int(data.get("confirm_bulk_delete_over", 1))
             self.confirm_bulk_actions = data.get("confirm_bulk_actions", True)
+            self.npc_data_source_path = data.get("npc_data_source_path", "")
+            self.current_expansion_number_setting = int(data.get("current_expansion_number", 0))
+            if hasattr(self, "side_panel"):
+                self.side_panel.set_npc_source_path(self.npc_data_source_path)
+                self.side_panel.set_expansion_number(self.current_expansion_number_setting)
             self.mapper.flip_display_y = bool(data.get("flip_display_y", False))
             if hasattr(self, "flip_y_action"):
                 self.flip_y_action.setChecked(self.mapper.flip_display_y)
@@ -3772,6 +4884,8 @@ class EqMapMainWindow(QMainWindow):
         self.pending_line_start = None
         self.render_map()
         self.side_panel.rebuild_layers()
+        if hasattr(self.side_panel, "rebuild_missing_style_match_combo"):
+            self.side_panel.rebuild_missing_style_match_combo()
         self.update_dirty_indicator()
         if remember:
             self.save_last_session()
@@ -3814,6 +4928,9 @@ class EqMapMainWindow(QMainWindow):
         self.label_items_by_record.clear()
         self.endpoint_handles.clear()
         self.selection_highlights.clear()
+        self.npc_preview_items.clear()
+        self.era_preview_items.clear()
+        self.missing_preview_items.clear()
         self.bulk_selected_records = []
         self.side_panel.set_record(None)
 
@@ -4923,6 +6040,615 @@ class EqMapMainWindow(QMainWindow):
         self.update_dirty_indicator()
         self.status_label.setText(f"Marked {len(points)} point(s) for deletion. Save Edits will remove them.")
 
+    def choose_npc_data_source(self) -> None:
+        start_dir = str(Path(self.npc_data_source_path).parent) if self.npc_data_source_path else str(APP_ROOT)
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose NPC Data Source",
+            start_dir,
+            "NPC data (*.xlsx *.csv);;Excel workbooks (*.xlsx);;CSV files (*.csv);;All files (*.*)",
+        )
+        if not file_name:
+            return
+        self.npc_data_source_path = file_name
+        self.side_panel.set_npc_source_path(file_name)
+        self.npc_data_rows = []
+        self.save_settings()
+        self.reload_npc_data_source()
+
+    def reload_npc_data_source(self) -> None:
+        if not self.npc_data_source_path:
+            QMessageBox.information(self, "NPC Data", "Choose an NPC data source first.")
+            return
+        try:
+            self.npc_data_rows = self.load_npc_data_rows(Path(self.npc_data_source_path))
+        except Exception as exc:
+            QMessageBox.critical(self, "NPC Data Load Error", f"Could not load NPC data:\n{exc}")
+            self.log_event(f"NPC data load failed: {exc}\n{traceback.format_exc()}")
+            return
+        self.status_label.setText(f"Loaded {len(self.npc_data_rows):,} NPC data row(s).")
+        if hasattr(self.side_panel, "npc_summary_label"):
+            self.side_panel.npc_summary_label.setText(f"Loaded {len(self.npc_data_rows):,} NPC data row(s). Click Compare Current Zone.")
+
+    def load_npc_data_rows(self, path: Path) -> list[NpcDataRow]:
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+        raw_rows: list[dict[str, Any]] = []
+        if path.suffix.lower() == ".csv":
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                raw_rows = [dict(row) for row in reader]
+        elif path.suffix.lower() == ".xlsx":
+            try:
+                from openpyxl import load_workbook
+            except ImportError as exc:
+                raise RuntimeError("Reading .xlsx NPC data requires openpyxl. Install it with: pip install openpyxl") from exc
+            workbook = load_workbook(path, read_only=True, data_only=True)
+            sheet = workbook.active
+            rows_iter = sheet.iter_rows(values_only=True)
+            headers = [clean_cell(value) for value in next(rows_iter, [])]
+            for values in rows_iter:
+                raw_rows.append({headers[index]: values[index] if index < len(values) else None for index in range(len(headers))})
+        else:
+            raise RuntimeError("NPC data source must be a .xlsx or .csv file.")
+
+        npc_rows: list[NpcDataRow] = []
+        for index, row in enumerate(raw_rows):
+            zone = row_get(row, "zone_shortname", "zone_short_name", "zone")
+            npc_name = row_get(row, "npc_name", "name")
+            npc_role = row_get(row, "npc_role", "lastname", "role")
+            if not zone or not npc_name:
+                continue
+            x = row_get_number(row, "npc_map_x", "map_x", "inverted_spawn_y", "spawn_y")
+            y = row_get_number(row, "npc_map_y", "map_y", "inverted_spawn_x", "spawn_x")
+            z = row_get_number(row, "npc_map_z", "map_z", "spawn_z")
+            if x is None or y is None or z is None:
+                continue
+            min_expansion_number = row_get_int(row, "min_expansion_number", "spawn_min_expansion", "min_expansion", "min_expansion_id")
+            max_expansion_number = row_get_int(row, "max_expansion_number", "spawn_max_expansion", "max_expansion", "max_expansion_id")
+            min_expansion_name = row_get(row, "min_expansion", "spawn_min_expansion_name", "min_expansion_name")
+            max_expansion_name = row_get(row, "max_expansion", "spawn_max_expansion_name", "max_expansion_name")
+            npc_rows.append(NpcDataRow(
+                source_index=index,
+                zone_shortname=zone.lower(),
+                npc_name=npc_name,
+                npc_role=npc_role,
+                npc_label=generated_npc_label(npc_name, npc_role),
+                x=float(x), y=float(y), z=float(z),
+                min_expansion_number=min_expansion_number,
+                max_expansion_number=max_expansion_number,
+                min_expansion_name=min_expansion_name,
+                max_expansion_name=max_expansion_name,
+                raw=row,
+            ))
+        return npc_rows
+
+    def current_loaded_zone_shortname(self) -> str:
+        return current_zone_shortname_from_files(self.loaded_files)
+
+    def compare_current_zone_to_npc_data(self) -> None:
+        if not self.loaded_files or not self.loaded_map.points:
+            QMessageBox.information(self, "NPC Match", "Load a zone map before comparing NPC data.")
+            return
+        if not self.npc_data_rows:
+            if self.npc_data_source_path:
+                self.reload_npc_data_source()
+            else:
+                self.choose_npc_data_source()
+            if not self.npc_data_rows:
+                return
+
+        zone = self.current_loaded_zone_shortname()
+        npc_candidates = [row for row in self.npc_data_rows if row.zone_shortname == zone]
+        if not npc_candidates:
+            QMessageBox.information(self, "NPC Match", f"No NPC rows found for zone '{zone}'.")
+            return
+
+        point_candidates = [point for point in self.loaded_map.points if not getattr(point, "deleted", False)]
+        results: list[NpcMatchResult] = []
+        used_point_ids: set[int] = set()
+
+        # Match NPC-first, mirroring extract_eq_map_points.py choose_best_map_match().
+        for npc in npc_candidates:
+            exact_matches: list[tuple[float, MapPointRecord]] = []
+            possible_matches: list[tuple[float, MapPointRecord]] = []
+            for point in point_candidates:
+                score, match_type, dist = score_point_to_npc(point, npc)
+                if match_type == "Yes":
+                    exact_matches.append((dist if dist is not None else math.inf, point))
+                elif match_type in {"Possible", "Coordinate Match"}:
+                    possible_matches.append((dist if dist is not None else math.inf, point))
+
+            if exact_matches:
+                dist, best_point = min(exact_matches, key=lambda item: item[0])
+                match_type = "Yes"
+                score = 100.0
+            elif possible_matches:
+                dist, best_point = min(possible_matches, key=lambda item: item[0])
+                if dist != math.inf and -20 < dist < 20:
+                    match_type = "Coordinate Match"
+                    score = 96.0
+                else:
+                    match_type = "Possible"
+                    score = 82.0
+            else:
+                best_point = None
+                dist = None
+                match_type = "NPC only"
+                score = 0.0
+
+            if best_point is None:
+                results.append(NpcMatchResult(None, npc, "NPC only", "", 0.0, None, False))
+                continue
+
+            used_point_ids.add(id(best_point))
+            confidence = confidence_from_score(score)
+            selected = match_type in {"Yes", "Coordinate Match"}
+            results.append(NpcMatchResult(best_point, npc, match_type, confidence, score, dist, selected))
+
+        for point in point_candidates:
+            if id(point) not in used_point_ids:
+                results.append(NpcMatchResult(point, None, "Map only", "", 0.0, None, False))
+
+        type_order = {"Yes": 0, "Coordinate Match": 1, "Possible": 2, "Map only": 5, "NPC only": 6, "No": 7}
+        results.sort(key=lambda result: (type_order.get(result.match_type, 9), -(result.score or 0), result.map_record.label if result.map_record else result.npc_row.npc_label if result.npc_row else ""))
+        self.npc_match_results = results
+        self.side_panel.rebuild_npc_match_table(results)
+
+        matched = sum(1 for result in results if result.map_record is not None and result.npc_row is not None)
+        selected = sum(1 for result in results if result.selected)
+        map_only = sum(1 for result in results if result.map_record is not None and result.npc_row is None)
+        npc_only = sum(1 for result in results if result.map_record is None and result.npc_row is not None)
+        yes_count = sum(1 for result in results if result.match_type == "Yes")
+        coord_count = sum(1 for result in results if result.match_type == "Coordinate Match")
+        possible_count = sum(1 for result in results if result.match_type == "Possible")
+        summary = (
+            f"Zone: {zone}\n"
+            f"Map points: {len(point_candidates):,}    NPC rows: {len(npc_candidates):,}\n"
+            f"Yes: {yes_count:,}    Coordinate Match: {coord_count:,}    Possible: {possible_count:,}\n"
+            f"Matched: {matched:,}    Selected: {selected:,}    Map only: {map_only:,}    NPC only: {npc_only:,}"
+        )
+        self.npc_match_base_summary = summary
+        self.side_panel.npc_summary_label.setText(summary)
+        self.side_panel.apply_npc_match_filters()
+        self.status_label.setText(f"NPC comparison complete for {zone}: {matched:,} matched row(s).")
+        self.show_side_tool("NPC Match")
+
+    def clear_npc_match_preview(self) -> None:
+        for item in list(getattr(self, "npc_preview_items", [])):
+            try:
+                self.scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self.npc_preview_items = []
+        self.status_label.setText("NPC match preview cleared.")
+
+    def preview_selected_npc_matches(self) -> None:
+        self.clear_npc_match_preview()
+        results = [result for result in self.side_panel.checked_npc_match_results() if result.map_record is not None and result.npc_row is not None]
+        if not results:
+            self.status_label.setText("No selected matched rows to preview.")
+            return
+        preview_pen = QPen(QColor(255, 180, 0), 1.2)
+        preview_brush = QBrush(QColor(255, 180, 0, 180))
+        for result in results:
+            point = result.map_record
+            npc = result.npc_row
+            old_scene = self.mapper.map_to_scene(point.x, point.y)
+            new_scene = self.mapper.map_to_scene(npc.x, npc.y)
+            line = QGraphicsLineItem(old_scene.x(), old_scene.y(), new_scene.x(), new_scene.y())
+            line.setPen(preview_pen)
+            line.setZValue(9000)
+            self.scene.addItem(line)
+            marker = QGraphicsEllipseItem(-5, -5, 10, 10)
+            marker.setPos(new_scene)
+            marker.setPen(preview_pen)
+            marker.setBrush(preview_brush)
+            marker.setZValue(9001)
+            marker.setToolTip(f"Preview: {npc.npc_label}")
+            self.scene.addItem(marker)
+            text = QGraphicsTextItem(npc.npc_label.replace("_", " "))
+            text.setDefaultTextColor(QColor(255, 180, 0))
+            text.setFont(QFont("Arial", 7, QFont.Bold))
+            text.setPos(new_scene.x() + 7, new_scene.y() - 7)
+            text.setZValue(9002)
+            self.scene.addItem(text)
+            self.npc_preview_items.extend([line, marker, text])
+        self.status_label.setText(f"Previewing {len(results):,} selected NPC swap(s).")
+
+    def apply_selected_npc_matches(self) -> None:
+        results = [result for result in self.side_panel.checked_npc_match_results() if result.map_record is not None and result.npc_row is not None]
+        if not results:
+            self.status_label.setText("No selected matched rows to apply.")
+            return
+        if not self.confirm_bulk_action(
+            "Apply NPC Match Swaps",
+            f"Apply label + XYZ from NPC data to {len(results)} selected map point(s)?\n\nRGB, size, source file, and layer are preserved. The map will be marked unsaved until you click Save Edits.",
+            len(results),
+            action_type="edit",
+        ):
+            return
+        before = [snapshot_point(result.map_record) for result in results]
+        records = [result.map_record for result in results]
+        for result in results:
+            point = result.map_record
+            npc = result.npc_row
+            point.label = npc.npc_label
+            point.x = npc.x
+            point.y = npc.y
+            point.z = npc.z
+            point.dirty = True
+        after = [snapshot_point(record) for record in records]
+        self.undo_stack.append(BulkEditCommand("NPC Match & Swap", records, before, after))
+        self.redo_stack.clear()
+        self.clear_npc_match_preview()
+        self.render_map(keep_view=True)
+        self.update_dirty_indicator()
+        self.status_label.setText(f"Applied NPC label + XYZ to {len(records):,} point(s). Save Edits when ready.")
+
+    def delete_selected_npc_match_points_from_map(self) -> None:
+        results = self.side_panel.checked_npc_match_results()
+        records: list[MapPointRecord] = []
+        seen: set[int] = set()
+        for result in results:
+            point = result.map_record
+            if point is None or getattr(point, "deleted", False):
+                continue
+            if id(point) in seen:
+                continue
+            records.append(point)
+            seen.add(id(point))
+
+        if not records:
+            self.status_label.setText("No selected NPC-match rows that are present on the map to delete.")
+            return
+
+        if not self.confirm_bulk_action(
+            "Delete Selected NPC Match Labels",
+            f"Mark {len(records)} selected map label(s) from the NPC Match table for deletion?\n\n"
+            "Only rows that are already present on the loaded map are included. NPC-only rows are ignored.\n\n"
+            "Save Edits will remove them from the map text files.",
+            len(records),
+            action_type="delete",
+        ):
+            return
+
+        before = [snapshot_point(point) | {"deleted": getattr(point, "deleted", False)} for point in records]
+        for point in records:
+            point.deleted = True
+            point.dirty = True
+        after = [snapshot_point(point) | {"deleted": getattr(point, "deleted", False)} for point in records]
+
+        self.undo_stack.append(BulkEditCommand("NPC Match delete labels", records, before, after))
+        self.redo_stack.clear()
+        self.clear_npc_match_preview()
+        self.render_map(keep_view=True)
+        self.side_panel.rebuild_layers()
+        self.side_panel.rebuild_missing_style_match_combo()
+        self.update_dirty_indicator()
+        self.status_label.setText(f"Marked {len(records):,} NPC-match map label(s) for deletion. Save Edits when ready.")
+
+    def save_current_expansion_setting(self) -> None:
+        self.current_expansion_number_setting = self.side_panel.current_expansion_number()
+        self.save_settings()
+        self.status_label.setText(f"Saved current expansion setting: {self.side_panel.current_expansion_name()} ({self.current_expansion_number_setting}).")
+
+    def _best_npc_match_for_point(self, point: MapPointRecord, npc_candidates: list[NpcDataRow]) -> Optional[tuple[float, str, Optional[float], NpcDataRow]]:
+        best: Optional[tuple[float, str, Optional[float], NpcDataRow]] = None
+        for npc in npc_candidates:
+            score, match_type, dist = score_point_to_npc(point, npc)
+            if match_type not in {"Yes", "Coordinate Match", "Possible"}:
+                continue
+            if best is None or score > best[0] or (score == best[0] and (dist or math.inf) < (best[2] or math.inf)):
+                best = (score, match_type, dist, npc)
+        return best
+
+    def scan_current_zone_for_era_cleanup(self) -> None:
+        if not self.loaded_files or not self.loaded_map.points:
+            QMessageBox.information(self, "Era Cleanup", "Load a zone map before scanning for expansion-era labels.")
+            return
+        if not self.npc_data_rows:
+            if self.npc_data_source_path:
+                self.reload_npc_data_source()
+            else:
+                self.choose_npc_data_source()
+            if not self.npc_data_rows:
+                return
+
+        selected_expansion = self.side_panel.current_expansion_number()
+        selected_name = self.side_panel.current_expansion_name()
+        zone = self.current_loaded_zone_shortname()
+        npc_candidates = [row for row in self.npc_data_rows if row.zone_shortname == zone]
+        if not npc_candidates:
+            QMessageBox.information(self, "Era Cleanup", f"No NPC rows found for zone '{zone}'.")
+            return
+
+        results: list[EraCleanupResult] = []
+        checked_points = [point for point in self.loaded_map.points if not getattr(point, "deleted", False)]
+        matched_count = 0
+        unknown_count = 0
+        safe_count = 0
+        for point in checked_points:
+            best = self._best_npc_match_for_point(point, npc_candidates)
+            if best is None:
+                continue
+            score, match_type, dist, npc = best
+            matched_count += 1
+            min_num = npc.min_expansion_number
+            max_num = npc.max_expansion_number
+            status = "Available"
+            flagged = False
+            if min_num is None or min_num < 0:
+                status = "Unknown min expansion"
+                unknown_count += 1
+            elif min_num > selected_expansion:
+                status = "Too new"
+                flagged = True
+            elif max_num is not None and max_num >= 0 and max_num < selected_expansion:
+                status = "Expired / removed"
+                flagged = True
+            else:
+                safe_count += 1
+            if flagged:
+                results.append(EraCleanupResult(
+                    map_record=point,
+                    npc_row=npc,
+                    era_status=status,
+                    match_type=match_type,
+                    confidence=confidence_from_score(score),
+                    score=score,
+                    distance=dist,
+                    selected=True,
+                ))
+
+        results.sort(key=lambda result: (0 if result.era_status == "Too new" else 1, result.npc_row.min_expansion_number if result.npc_row.min_expansion_number is not None else 999, result.map_record.label))
+        self.era_cleanup_results = results
+        self.side_panel.rebuild_era_cleanup_table(results)
+        summary = (
+            f"Zone: {zone}   Selected era: {selected_name} ({selected_expansion})\n"
+            f"Map labels checked: {len(checked_points):,}   Matched to NPC data: {matched_count:,}\n"
+            f"Flagged for review: {len(results):,}   Safe/current-era: {safe_count:,}   Unknown min expansion: {unknown_count:,}\n"
+            "Flags include min expansion greater than selected era and max expansion earlier than selected era."
+        )
+        self.side_panel.era_summary_label.setText(summary)
+        self.status_label.setText(f"Era cleanup scan complete for {zone}: {len(results):,} label(s) flagged.")
+        self.show_side_tool("NPC Match")
+
+    def clear_era_cleanup_preview(self) -> None:
+        for item in list(getattr(self, "era_preview_items", [])):
+            try:
+                self.scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self.era_preview_items = []
+        self.status_label.setText("Era cleanup preview cleared.")
+
+    def preview_selected_era_cleanup(self) -> None:
+        self.clear_era_cleanup_preview()
+        results = self.side_panel.checked_era_cleanup_results()
+        if not results:
+            self.status_label.setText("No selected era cleanup rows to preview.")
+            return
+        preview_pen = QPen(QColor(255, 80, 80), 1.8)
+        preview_brush = QBrush(QColor(255, 80, 80, 170))
+        for result in results:
+            point = result.map_record
+            scene_pos = self.mapper.map_to_scene(point.x, point.y)
+            marker = QGraphicsEllipseItem(-7, -7, 14, 14)
+            marker.setPos(scene_pos)
+            marker.setPen(preview_pen)
+            marker.setBrush(preview_brush)
+            marker.setZValue(9101)
+            marker.setToolTip(f"Era cleanup: {point.label} - {result.era_status}")
+            self.scene.addItem(marker)
+            text = QGraphicsTextItem(f"REMOVE: {point.label.replace('_', ' ')}")
+            text.setDefaultTextColor(QColor(255, 80, 80))
+            text.setFont(QFont("Arial", 7, QFont.Bold))
+            text.setPos(scene_pos.x() + 8, scene_pos.y() - 8)
+            text.setZValue(9102)
+            self.scene.addItem(text)
+            self.era_preview_items.extend([marker, text])
+        self.status_label.setText(f"Previewing {len(results):,} era cleanup removal(s).")
+
+    def remove_selected_era_cleanup_labels(self) -> None:
+        results = self.side_panel.checked_era_cleanup_results()
+        records: list[MapPointRecord] = []
+        seen: set[int] = set()
+        for result in results:
+            if id(result.map_record) not in seen and not getattr(result.map_record, "deleted", False):
+                records.append(result.map_record)
+                seen.add(id(result.map_record))
+        if not records:
+            self.status_label.setText("No selected era cleanup labels to remove.")
+            return
+        selected_expansion = self.side_panel.current_expansion_number()
+        selected_name = self.side_panel.current_expansion_name()
+        if not self.confirm_bulk_action(
+            "Remove Future/Expired Era Labels",
+            f"Mark {len(records)} selected map label(s) for deletion?\n\nSelected era: {selected_name} ({selected_expansion})\nThis removes labels whose matched NPC min expansion is later than your selected era, or whose max expansion is earlier than your selected era.\n\nSave Edits will remove them from the map text files.",
+            len(records),
+            action_type="delete",
+        ):
+            return
+        before = [snapshot_point(point) | {"deleted": getattr(point, "deleted", False)} for point in records]
+        for point in records:
+            point.deleted = True
+            point.dirty = True
+        after = [snapshot_point(point) | {"deleted": getattr(point, "deleted", False)} for point in records]
+        self.undo_stack.append(BulkEditCommand("Era cleanup remove labels", records, before, after))
+        self.redo_stack.clear()
+        self.clear_era_cleanup_preview()
+        self.render_map(keep_view=True)
+        self.side_panel.rebuild_layers()
+        self.update_dirty_indicator()
+        self.status_label.setText(f"Marked {len(records):,} era cleanup label(s) for deletion. Save Edits when ready.")
+
+    def _used_npc_indices_for_current_map(self, points: list[MapPointRecord], npc_candidates: list[NpcDataRow]) -> set[int]:
+        scored: list[tuple[float, int, int]] = []
+        for point_index, point in enumerate(points):
+            for npc_index, npc in enumerate(npc_candidates):
+                score, match_type, _dist = score_point_to_npc(point, npc)
+                if match_type in {"Yes", "Coordinate Match", "Possible"}:
+                    scored.append((score, point_index, npc_index))
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        used_points: set[int] = set()
+        used_npcs: set[int] = set()
+        for score, point_index, npc_index in scored:
+            if point_index in used_points or npc_index in used_npcs:
+                continue
+            used_points.add(point_index)
+            used_npcs.add(npc_index)
+        return used_npcs
+
+    def find_missing_npcs_for_current_era(self) -> None:
+        if not self.loaded_files or self.loaded_map is None:
+            QMessageBox.information(self, "Add Missing NPCs", "Load a zone map before finding missing NPCs.")
+            return
+        if not self.npc_data_rows:
+            if self.npc_data_source_path:
+                self.reload_npc_data_source()
+            else:
+                self.choose_npc_data_source()
+            if not self.npc_data_rows:
+                return
+
+        selected_expansion = self.side_panel.current_expansion_number()
+        selected_name = self.side_panel.current_expansion_name()
+        zone = self.current_loaded_zone_shortname()
+        zone_rows = [row for row in self.npc_data_rows if row.zone_shortname == zone]
+        if not zone_rows:
+            QMessageBox.information(self, "Add Missing NPCs", f"No NPC rows found for zone '{zone}'.")
+            return
+
+        valid_rows = [row for row in zone_rows if npc_is_valid_for_expansion(row, selected_expansion)]
+        current_points = [point for point in self.loaded_map.points if not getattr(point, "deleted", False)]
+        used_valid_indices = self._used_npc_indices_for_current_map(current_points, valid_rows)
+
+        missing_results: list[MissingNpcResult] = []
+        for npc_index, npc in enumerate(valid_rows):
+            if npc_index in used_valid_indices:
+                continue
+            missing_results.append(MissingNpcResult(npc_row=npc, npc_label=npc.npc_label, selected=False))
+
+        missing_results.sort(key=lambda result: (
+            result.npc_row.min_expansion_number if result.npc_row.min_expansion_number is not None and result.npc_row.min_expansion_number >= 0 else -1,
+            result.npc_label.lower(),
+            result.npc_row.source_index,
+        ))
+        self.missing_npc_results = missing_results
+        self.side_panel.rebuild_missing_npc_table(missing_results)
+        summary = (
+            f"Zone: {zone}   Selected era: {selected_name} ({selected_expansion})\n"
+            f"NPC rows in zone: {len(zone_rows):,}   Valid for era: {len(valid_rows):,}\n"
+            f"Already on map: {len(used_valid_indices):,}   Missing/addable: {len(missing_results):,}\n"
+            "Rows are not checked by default; edit labels in the table, then check the NPCs to add."
+        )
+        self.side_panel.missing_summary_label.setText(summary)
+        self.status_label.setText(f"Missing NPC scan complete for {zone}: {len(missing_results):,} addable NPC(s).")
+        self.show_side_tool("NPC Match")
+
+    def clear_missing_npc_preview(self) -> None:
+        for item in list(getattr(self, "missing_preview_items", [])):
+            try:
+                self.scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self.missing_preview_items = []
+        self.status_label.setText("Missing NPC preview cleared.")
+
+    def preview_selected_missing_npcs(self) -> None:
+        self.clear_missing_npc_preview()
+        results = self.side_panel.checked_missing_npc_results()
+        if not results:
+            self.status_label.setText("No selected missing NPC rows to preview.")
+            return
+        r = self.side_panel.missing_r_spin.value()
+        g = self.side_panel.missing_g_spin.value()
+        b = self.side_panel.missing_b_spin.value()
+        preview_colour = QColor(r, g, b, 185)
+        preview_pen = QPen(QColor(r, g, b), 1.8)
+        preview_brush = QBrush(preview_colour)
+        for result in results:
+            npc = result.npc_row
+            scene_pos = self.mapper.map_to_scene(npc.x, npc.y)
+            marker = QGraphicsEllipseItem(-7, -7, 14, 14)
+            marker.setPos(scene_pos)
+            marker.setPen(preview_pen)
+            marker.setBrush(preview_brush)
+            marker.setZValue(9201)
+            marker.setToolTip(f"Add NPC: {result.npc_label}")
+            self.scene.addItem(marker)
+            text = QGraphicsTextItem(f"ADD: {result.npc_label.replace('_', ' ')}")
+            text.setDefaultTextColor(QColor(r, g, b))
+            text.setFont(QFont("Arial", 7, QFont.Bold))
+            text.setPos(scene_pos.x() + 8, scene_pos.y() - 8)
+            text.setZValue(9202)
+            self.scene.addItem(text)
+            self.missing_preview_items.extend([marker, text])
+        self.status_label.setText(f"Previewing {len(results):,} missing NPC addition(s).")
+
+    def add_selected_missing_npcs_to_map(self) -> None:
+        results = self.side_panel.checked_missing_npc_results()
+        if not results:
+            self.status_label.setText("No selected missing NPC rows to add.")
+            return
+        active_file = self.active_file_for_new_records()
+        if active_file is None:
+            QMessageBox.information(self, "Add Missing NPCs", "No active map file is available for new NPC labels.")
+            return
+        selected_expansion = self.side_panel.current_expansion_number()
+        selected_name = self.side_panel.current_expansion_name()
+        if not self.confirm_bulk_action(
+            "Add Missing NPC Labels",
+            f"Add {len(results)} selected NPC label(s) to {active_file.name}?\n\nSelected era: {selected_name} ({selected_expansion})\nThe new points will be appended to the active map file when you click Save Edits.",
+            len(results),
+            action_type="edit",
+        ):
+            return
+
+        r = self.side_panel.missing_r_spin.value()
+        g = self.side_panel.missing_g_spin.value()
+        b = self.side_panel.missing_b_spin.value()
+        size = self.side_panel.missing_size_spin.value()
+        new_points: list[MapPointRecord] = []
+        seen_labels: set[str] = set()
+        for result in results:
+            label = result.npc_label.strip() or result.npc_row.npc_label
+            key = normalize_label(label)
+            if key in seen_labels:
+                continue
+            seen_labels.add(key)
+            npc = result.npc_row
+            new_points.append(MapPointRecord(
+                file_path=active_file,
+                line_index=-1,
+                raw_text="",
+                x=npc.x,
+                y=npc.y,
+                z=npc.z,
+                r=r,
+                g=g,
+                b=b,
+                size=size,
+                label=label,
+                dirty=True,
+            ))
+
+        if not new_points:
+            self.status_label.setText("No unique selected missing NPC labels to add.")
+            return
+        self.loaded_map.points.extend(new_points)
+        self.undo_stack.append(AddRecordsCommand("Add missing NPC labels", self, new_points, "points"))
+        self.redo_stack.clear()
+        self.clear_missing_npc_preview()
+        self.render_map(keep_view=True)
+        self.side_panel.rebuild_layers()
+        self.update_dirty_indicator()
+        self.side_panel.rebuild_missing_style_match_combo()
+        self.status_label.setText(f"Added {len(new_points):,} missing NPC label(s) to {active_file.name}. Save Edits when ready.")
+
     def choose_map_folder(self) -> None:
         start_dir = getattr(self, "map_folder", "") or (str(self.loaded_files[0].parent) if self.loaded_files else "")
         folder = QFileDialog.getExistingDirectory(self, "Choose EQ Maps Folder", start_dir)
@@ -5093,7 +6819,11 @@ class EqMapMainWindow(QMainWindow):
         command = self.undo_stack.pop()
         command.undo()
         self.redo_stack.append(command)
-        if hasattr(command, "record") and command.record in (self.loaded_map.lines + self.loaded_map.points):
+        if isinstance(command, BulkEditCommand):
+            self.render_map(keep_view=True)
+            self.side_panel.rebuild_layers()
+            self.update_dirty_indicator()
+        elif hasattr(command, "record") and command.record in (self.loaded_map.lines + self.loaded_map.points):
             self.update_record_items(command.record)
             self.side_panel.set_record(command.record)
         self.status_label.setText(f"Undo: {command.label}")
@@ -5105,7 +6835,11 @@ class EqMapMainWindow(QMainWindow):
         command = self.redo_stack.pop()
         command.redo()
         self.undo_stack.append(command)
-        if hasattr(command, "record") and command.record in (self.loaded_map.lines + self.loaded_map.points):
+        if isinstance(command, BulkEditCommand):
+            self.render_map(keep_view=True)
+            self.side_panel.rebuild_layers()
+            self.update_dirty_indicator()
+        elif hasattr(command, "record") and command.record in (self.loaded_map.lines + self.loaded_map.points):
             self.update_record_items(command.record)
             self.side_panel.set_record(command.record)
         self.status_label.setText(f"Redo: {command.label}")
@@ -5130,10 +6864,10 @@ class EqMapMainWindow(QMainWindow):
         if dirty_files:
             names = ", ".join(path.name for path in dirty_files)
             self.dirty_label.setText(f"Unsaved: {names}")
-            self.setWindowTitle(f"EQ Map Editor {VERSION} *")
+            self.setWindowTitle(f"EQ Map Editor *")
         else:
             self.dirty_label.setText("Clean")
-            self.setWindowTitle(f"EQ Map Editor {VERSION}")
+            self.setWindowTitle(f"EQ Map Editor")
 
 
     def externally_modified_files(self, files: Optional[list[Path]] = None) -> list[Path]:

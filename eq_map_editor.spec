@@ -16,6 +16,8 @@ a = Analysis(
         'PySide6.QtCore',
         'PySide6.QtGui',
         'PySide6.QtWidgets',
+        'openpyxl',
+        'openpyxl.cell._writer',
     ],
     hookspath=[],
     hooksconfig={},
