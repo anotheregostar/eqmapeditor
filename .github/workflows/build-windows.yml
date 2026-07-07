@@ -25,34 +25,46 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt pyinstaller
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --clean --noconfirm eq_map_editor.spec
+          pyinstaller --noconfirm eq_map_editor.spec
 
-      - name: Create release package
+      - name: Create full release folder
         shell: pwsh
         run: |
-          if (Test-Path release) { Remove-Item release -Recurse -Force }
-          New-Item -ItemType Directory -Force release | Out-Null
+          if (Test-Path "release") { Remove-Item "release" -Recurse -Force }
+          if (Test-Path "EQMapEditor-Windows.zip") { Remove-Item "EQMapEditor-Windows.zip" -Force }
 
-          Copy-Item dist\EQMapEditor release\EQMapEditor -Recurse
+          New-Item -ItemType Directory -Path "release" | Out-Null
 
-          # Include the NPC Data folder, including the provided map data workbook.
+          # Put the built app in its own folder.
+          Copy-Item "dist\EQMapEditor" "release\EQMapEditor" -Recurse -Force
+
+          # Include the NPC data/tools folder, including the provided Combined Map Data workbook.
           if (Test-Path "NPC Data") {
             robocopy "NPC Data" "release\NPC Data" /E /XF "*Expansion Apply Summary.csv" /XD "*map backup before expansion apply*"
             if ($LASTEXITCODE -gt 7) { exit $LASTEXITCODE }
             $global:LASTEXITCODE = 0
           }
 
-          if (Test-Path docs) { Copy-Item docs release\docs -Recurse }
-          if (Test-Path README.md) { Copy-Item README.md release\README.md }
-          if (Test-Path CHANGELOG.md) { Copy-Item CHANGELOG.md release\CHANGELOG.md }
-          if (Test-Path LICENSE) { Copy-Item LICENSE release\LICENSE }
+          # Include documentation and project files if present.
+          if (Test-Path "docs") { Copy-Item "docs" "release\docs" -Recurse -Force }
+          if (Test-Path "README.md") { Copy-Item "README.md" "release\README.md" -Force }
+          if (Test-Path "CHANGELOG.md") { Copy-Item "CHANGELOG.md" "release\CHANGELOG.md" -Force }
+          if (Test-Path "LICENSE") { Copy-Item "LICENSE" "release\LICENSE" -Force }
+          if (Test-Path "requirements.txt") { Copy-Item "requirements.txt" "release\requirements.txt" -Force }
 
-          if (Test-Path EQMapEditor-Windows.zip) { Remove-Item EQMapEditor-Windows.zip -Force }
-          Compress-Archive -Path release\* -DestinationPath EQMapEditor-Windows.zip
+      - name: Show release contents
+        shell: pwsh
+        run: |
+          Get-ChildItem "release" -Recurse | Select-Object FullName
+
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "release\*" -DestinationPath "EQMapEditor-Windows.zip" -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -60,7 +72,7 @@ jobs:
           name: EQMapEditor-Windows
           path: EQMapEditor-Windows.zip
 
-      - name: Publish GitHub release asset
+      - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
